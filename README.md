@@ -54,7 +54,7 @@ A high-performance WebSocket bridge that connects **FSUIPC WebSocket Server** wi
 1. **Start MSFS and FSUIPC7**
 2. **Run the bridge**
    ```bash
-   python fsuipc_shirley_bridge_v8.py
+   python fsuipc_shirley_bridge.py
    ```
 3. **Connect Shirley** to `ws://localhost:2992/api/v1`
 
