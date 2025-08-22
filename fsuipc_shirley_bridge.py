@@ -682,12 +682,6 @@ class FSUIPCWSClient:
             print(f"[FSUIPCWS] Received: {data}")
             FIRST_PAYLOAD = False
 
-        # Log data quality
-        if isinstance(payload, dict) and payload:
-            valid_keys = [k for k, v in payload.items() if v is not None]
-            if len(valid_keys) > 0:
-                print(f"[FSUIPCWS] Valid data fields: {len(valid_keys)}/{len(payload)}")
-
         # before detecting payload:
         if "command" in data and "success" in data and not any(k in data for k in ("data","values","offsets")):
             if not data.get("success"):
@@ -696,6 +690,12 @@ class FSUIPCWSClient:
 
         # Generic parser using table and partial updates
         payload = data.get("data") or data.get("values") or data
+
+        # Log data quality
+        if isinstance(payload, dict) and payload:
+            valid_keys = [k for k, v in payload.items() if v is not None]
+            if len(valid_keys) > 0:
+                print(f"[FSUIPCWS] Valid data fields: {len(valid_keys)}/{len(payload)}")
 
         # some builds return 'values' as a list of {name, value}
         if isinstance(payload, list):
