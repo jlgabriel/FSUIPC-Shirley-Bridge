@@ -14,6 +14,7 @@ WS_PORT = 2992
 WS_PATH = "/api/v1"                     # for logging only
 SEND_INTERVAL = 0.25                    # 4 Hz (every 250 ms)
 DEBUG_FSUIPC_MESSAGES = False
+# Set to True to enable detailed debugging of FSUIPC messages, JSON output, and broadcast info
 FIRST_PAYLOAD = False
 
 # ===================== Declarative writes =====================
@@ -100,11 +101,18 @@ READ_SIGNALS = {
     "MagVarRaw": {"address": 0x02A0, "type": "short", "size": 2, "transform": "magvar_raw_to_deg", "sink": ("att", "mag_var_deg")},
 
     # --- Lights (bitfield from 0x0D0C) ---
-    "LIGHT_NAV":     {"address": 0x0D0C, "type": "ushort", "size": 2, "transform": "bit0_to_bool", "sink": ("lights", "nav_on")},
-    "LIGHT_BEACON":  {"address": 0x0D0C, "type": "ushort", "size": 2, "transform": "bit1_to_bool", "sink": ("lights", "beacon_on")},
-    "LIGHT_LANDING": {"address": 0x0D0C, "type": "ushort", "size": 2, "transform": "bit2_to_bool", "sink": ("lights", "landing_on")},
-    "LIGHT_STROBE":  {"address": 0x0D0C, "type": "ushort", "size": 2, "transform": "bit4_to_bool", "sink": ("lights", "strobe_on")},
-    "LIGHT_TAXI":    {"address": 0x0D0C, "type": "ushort", "size": 2, "transform": "bit2_to_bool", "sink": ("lights", "taxi_on")},
+    "LIGHT_NAV":     {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_0", "sink": ("lights", "nav_on")},
+    "LIGHT_LANDING": {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_2", "sink": ("lights", "landing_on")},
+    "LIGHT_STROBE":  {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_4", "sink": ("lights", "strobe_on")},
+    "LIGHT_TAXI":    {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_3", "sink": ("lights", "taxi_on")},
+
+    # --- Systems (individual switches/status) ---
+    "PITOT_HEAT":    {"address": 0x029C, "type": "byte",  "size": 1, "transform": "nonzero_to_bool", "sink": ("systems", "pitot_heat_on")},
+    "BRAKES":        {"address": 0x0BC8, "type": "ushort", "size": 2, "transform": "nonzero_to_bool", "sink": ("systems", "brakes_on")},
+    "BATTERY_MAIN":  {"address": 0x281C, "type": "uint",  "size": 4, "transform": "nonzero_to_bool", "sink": ("systems", "battery_main_on")},
+
+    # --- Barometric Pressure (works in MSFS) ---
+    "BARO_PRESSURE": {"address": 0x0330, "type": "ushort", "size": 2, "transform": "baro_to_inhg", "sink": ("environment", "pressure_inhg")},
 }
 
 # Transforms to units expected by SimData.update_*_partial()
@@ -155,24 +163,63 @@ def magvar_raw_to_deg(raw):
     except:
         return None
 
-def bit0_to_bool(raw):
-    """Extract bit 0 from raw value"""
-    try: return bool(int(raw) & 0x01)
+def bits_to_bool_0(raw):
+    """Extract bit 0 from FSUIPC bits object"""
+    try:
+        if isinstance(raw, dict) and '0' in raw:
+            return bool(raw['0'])
+        return None
+    except:
+        return None
+
+def bits_to_bool_1(raw):
+    """Extract bit 1 from FSUIPC bits object"""
+    try:
+        if isinstance(raw, dict) and '1' in raw:
+            return bool(raw['1'])
+        return None
+    except:
+        return None
+
+def bits_to_bool_2(raw):
+    """Extract bit 2 from FSUIPC bits object"""
+    try:
+        if isinstance(raw, dict) and '2' in raw:
+            return bool(raw['2'])
+        return None
+    except:
+        return None
+
+def bits_to_bool_3(raw):
+    """Extract bit 3 from FSUIPC bits object"""
+    try:
+        if isinstance(raw, dict) and '3' in raw:
+            return bool(raw['3'])
+        return None
+    except:
+        return None
+
+def bits_to_bool_4(raw):
+    """Extract bit 4 from FSUIPC bits object"""
+    try:
+        if isinstance(raw, dict) and '4' in raw:
+            return bool(raw['4'])
+        return None
+    except:
+        return None
+
+def nonzero_to_bool(raw):
+    """Convert non-zero values to True, zero to False"""
+    try: return bool(int(raw))
     except: return None
 
-def bit1_to_bool(raw):
-    """Extract bit 1 from raw value"""
-    try: return bool(int(raw) & 0x02)
-    except: return None
 
-def bit2_to_bool(raw):
-    """Extract bit 2 from raw value"""
-    try: return bool(int(raw) & 0x04)
-    except: return None
 
-def bit4_to_bool(raw):
-    """Extract bit 4 from raw value"""
-    try: return bool(int(raw) & 0x10)
+def baro_to_inhg(raw):
+    """Convert barometric pressure from millibars*16 to inches of mercury"""
+    try:
+        mb = float(raw) / 16.0  # Convert to millibars
+        return mb * 0.02953     # Convert mb to inHg
     except: return None
 
 TRANSFORMS.update({
@@ -180,11 +227,16 @@ TRANSFORMS.update({
     "vs_raw_to_fpm":   vs_raw_to_fpm,
     "meters256_to_m":  meters256_to_m,
     "magvar_raw_to_deg": magvar_raw_to_deg,
-    # Bitfield transforms for lights
-    "bit0_to_bool": bit0_to_bool,
-    "bit1_to_bool": bit1_to_bool,
-    "bit2_to_bool": bit2_to_bool,
-    "bit4_to_bool": bit4_to_bool,
+    # Bitfield transforms for lights (updated for bits object processing)
+    "bits_to_bool_0": bits_to_bool_0,
+    "bits_to_bool_1": bits_to_bool_1,
+    "bits_to_bool_2": bits_to_bool_2,
+    "bits_to_bool_3": bits_to_bool_3,
+    "bits_to_bool_4": bits_to_bool_4,
+    # Boolean transforms for systems
+    "nonzero_to_bool": nonzero_to_bool,
+    # Weather transforms for environment
+    "baro_to_inhg": baro_to_inhg,
 })
 
 # ===================== Mapping sinks -> Shirley keys =====================
@@ -212,7 +264,6 @@ _ATT_SINK_TO_SHIRLEY = {
 
 _LIGHTS_SINK_TO_SHIRLEY = {
     "nav_on": "lights.navigationLightsSwitchOn",
-    "beacon_on": "lights.beaconLightsSwitchOn",
     "landing_on": "lights.landingLightsSwitchOn",
     "taxi_on": "lights.taxiLightsSwitchOn",
     "strobe_on": "lights.strobeLightsSwitchOn",
@@ -243,6 +294,10 @@ _INDICATORS_SINK_TO_SHIRLEY = {
     "stall_warning_on": "indicators.stallWarningOn",
 }
 
+_ENVIRONMENT_SINK_TO_SHIRLEY = {
+    "pressure_inhg": "environment.seaLevelPressureInchesMercury",
+}
+
 def compute_capabilities_reads():
     """Generates the list of 'reads' fields from all sink mappings."""
     out = set()
@@ -267,6 +322,8 @@ def compute_capabilities_reads():
     for shirley_key in _LEVERS_SINK_TO_SHIRLEY.values():
         out.add(shirley_key)
     for shirley_key in _INDICATORS_SINK_TO_SHIRLEY.values():
+        out.add(shirley_key)
+    for shirley_key in _ENVIRONMENT_SINK_TO_SHIRLEY.values():
         out.add(shirley_key)
 
     # Software-derived fields
@@ -349,6 +406,7 @@ class SimData:
         self._autopilot_data = {}   # ap_master_on, hdg_select_on, hdg_bug_deg, alt_bug_ft, vs_target_fpm
         self._levers_data = {}      # flaps_pct, gear_pct, throttle1_pct
         self._indicators_data = {}  # altimeter_inhg, stall_warning_on
+        self._environment_data = {} # pressure_inhg (only working field in MSFS)
 
     async def update_from_xgps(self, xgps: XGPSData):
         async with self._lock:
@@ -463,10 +521,18 @@ class SimData:
                     self._indicators_data[key] = value
             self.last_timestamp = iso_utc_ms()
 
+    async def update_environment_partial(self, **kwargs):
+        async with self._lock:
+            for key, value in kwargs.items():
+                if value is not None:
+                    self._environment_data[key] = value
+        self.last_timestamp = iso_utc_ms()
+
     async def get_snapshot(self) -> Dict[str, Any]:
         async with self._lock:
             pos = {}
             att = {}
+            out = {}
 
             if self.xgps:
                 if self.xgps.latitude  is not None:  pos["latitudeDeg"]  = round(clamp(self.xgps.latitude,  -90.0,  90.0), 6)
@@ -505,12 +571,29 @@ class SimData:
                 if self._track_deg is not None:
                     att["trueGroundTrackDeg"] = self._norm360(self._track_deg)
 
+            # DEBUG: Check pos and att construction
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[DEBUG] pos dict: {pos}")
+                print(f"[DEBUG] att dict: {att}")
+                print(f"[DEBUG] self.xgps exists: {self.xgps is not None}")
+                print(f"[DEBUG] self.xatt exists: {self.xatt is not None}")
+                if self.xgps:
+                    print(f"[DEBUG] xgps latitude: {self.xgps.latitude}")
+                    print(f"[DEBUG] xgps longitude: {self.xgps.longitude}")
+                    print(f"[DEBUG] xgps alt_msl_meters: {self.xgps.alt_msl_meters}")
+                    print(f"[DEBUG] xgps ground_speed_kts: {self.xgps.ground_speed_kts}")
+                if self.xatt:
+                    print(f"[DEBUG] xatt heading_deg: {self.xatt.heading_deg}")
+                    print(f"[DEBUG] xatt pitch_deg: {self.xatt.pitch_deg}")
+                    print(f"[DEBUG] xatt roll_deg: {self.xatt.roll_deg}")
+
             # New data groups
             lights = {}
             systems = {}
             autopilot = {}
             levers = {}
             indicators = {}
+            environment = {}
 
             # Build lights group
             for sink_key, shirley_key in _LIGHTS_SINK_TO_SHIRLEY.items():
@@ -564,21 +647,53 @@ class SimData:
                         else:
                             indicators[parts[1]] = float(value)
 
+            # Build environment group
+            for sink_key, shirley_key in _ENVIRONMENT_SINK_TO_SHIRLEY.items():
+                if sink_key in self._environment_data:
+                    parts = shirley_key.split('.')
+                    if len(parts) == 2 and parts[0] == "environment":
+                        environment[parts[1]] = float(self._environment_data[sink_key])
+
+            # CRITICAL: Ensure pos and att are added to output
+            if pos:
+                out["position"] = pos
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[DEBUG] Added position to output: {len(pos)} fields")
+            else:
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[DEBUG] WARNING: pos dict is empty!")
+
+            if att:
+                out["attitude"] = att
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[DEBUG] Added attitude to output: {len(att)} fields")
+            else:
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[DEBUG] WARNING: att dict is empty!")
+
             # Add non-empty groups to output
             if lights: out["lights"] = lights
             if systems: out["systems"] = systems
             if autopilot: out["autopilot"] = autopilot
             if levers: out["levers"] = levers
             if indicators: out["indicators"] = indicators
+            if environment: out["environment"] = environment
 
             # Validar datos críticos antes de enviar
             if pos.get("latitudeDeg") is not None:
                 if not validate_position_data(pos.get("latitudeDeg"), pos.get("longitudeDeg"), pos.get("mslAltitudeFt")):
                     print(f"[WARNING] Invalid position data detected: lat={pos.get('latitudeDeg')}, lon={pos.get('longitudeDeg')}")
 
-            out = {}
-            if pos: out["position"] = pos
-            if att: out["attitude"] = att
+            # Official Debug: Show complete JSON when debug enabled
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[DEBUG] Complete JSON to Shirley:")
+                print(json.dumps(out, indent=2))
+                print(f"[DEBUG] JSON groups: {list(out.keys())}")
+                if out:
+                    total_fields = sum(len(group) if isinstance(group, dict) else 1 for group in out.values())
+                    print(f"[DEBUG] Total fields: {total_fields}")
+
+            # Return the complete snapshot with all groups
             return out
 
     def _bearing_deg(self, lat1, lon1, lat2, lon2):
@@ -691,11 +806,11 @@ class FSUIPCWSClient:
         # Generic parser using table and partial updates
         payload = data.get("data") or data.get("values") or data
 
-        # Log data quality
-        if isinstance(payload, dict) and payload:
-            valid_keys = [k for k, v in payload.items() if v is not None]
-            if len(valid_keys) > 0:
-                print(f"[FSUIPCWS] Valid data fields: {len(valid_keys)}/{len(payload)}")
+        # Log data quality (commented out to reduce verbosity)
+        # if isinstance(payload, dict) and payload:
+        #     valid_keys = [k for k, v in payload.items() if v is not None]
+        #     if len(valid_keys) > 0:
+        #         print(f"[FSUIPCWS] Valid data fields: {len(valid_keys)}/{len(payload)}")
 
         # some builds return 'values' as a list of {name, value}
         if isinstance(payload, list):
@@ -709,7 +824,9 @@ class FSUIPCWSClient:
 
         gps_kwargs = {}   # latitude, longitude, alt_msl_meters, track_deg, ground_speed_kts
         att_kwargs = {}   # heading_deg, pitch_deg, roll_deg
-        lights_kwargs = {} # nav_on, beacon_on, landing_on, taxi_on, strobe_on
+        lights_kwargs = {} # nav_on, landing_on, taxi_on, strobe_on
+        systems_kwargs = {} # pitot_heat_on, brakes_on, battery_main_on
+        environment_kwargs = {} # wind_dir_deg, wind_speed_kts, pressure_inhg, visibility_miles, temp_celsius
 
         for key, cfg in READ_SIGNALS.items():
             if key not in payload:
@@ -730,6 +847,27 @@ class FSUIPCWSClient:
             elif sink_group == "lights":
                 if val is not None and sink_field not in lights_kwargs:
                     lights_kwargs[sink_field] = val
+            elif sink_group == "systems":
+                if val is not None and sink_field not in systems_kwargs:
+                    systems_kwargs[sink_field] = val
+            elif sink_group == "environment":
+                if val is not None and sink_field not in environment_kwargs:
+                    environment_kwargs[sink_field] = val
+
+        # Debug: Log all processed groups
+        if DEBUG_FSUIPC_MESSAGES:
+            all_groups = {
+                'gps': gps_kwargs,
+                'att': att_kwargs,
+                'lights': lights_kwargs,
+                'systems': systems_kwargs,
+                'environment': environment_kwargs
+            }
+            active_groups = {k: v for k, v in all_groups.items() if v}
+            if active_groups:
+                print(f"[DEBUG] All processed groups: {list(active_groups.keys())}")
+                for group_name, group_data in active_groups.items():
+                    print(f"[DEBUG] {group_name}: {group_data}")
 
         # Partial updates (already exist in SimData)
         if gps_kwargs:
@@ -738,6 +876,10 @@ class FSUIPCWSClient:
             asyncio.create_task(self.sim_data.update_att_partial(**att_kwargs))
         if lights_kwargs:
             asyncio.create_task(self.sim_data.update_lights_partial(**lights_kwargs))
+        if systems_kwargs:
+            asyncio.create_task(self.sim_data.update_systems_partial(**systems_kwargs))
+        if environment_kwargs:
+            asyncio.create_task(self.sim_data.update_environment_partial(**environment_kwargs))
 
         self.lastDataReceivedTime = time.time()
 
@@ -868,6 +1010,17 @@ class ShirleyWebSocketServer:
         try:
             while True:
                 snapshot = await self.sim_data.get_snapshot()
+
+                # Official Debug: Show broadcast info
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[DEBUG] Broadcasting to {len(self.connections)} clients")
+                    if not snapshot:
+                        print(f"[DEBUG] WARNING: Empty snapshot!")
+
+                # DEBUG: Verificar que no hay keys prohibidas
+                if any(key in snapshot for key in ["type", "reads", "writes"]):
+                    print(f"[ERROR] Snapshot contains prohibited keys: {list(snapshot.keys())}")
+
                 msg = json.dumps(snapshot)
                 stale = []
                 for ws in list(self.connections):
