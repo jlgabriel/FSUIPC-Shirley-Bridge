@@ -48,7 +48,6 @@ BARO_RAW_MAX = 17600  # ~1100 mb
 # Time and frequency constants
 MILLISECONDS_PER_SECOND = 1000
 SECONDS_PER_MINUTE = 60.0
-MINUTES_PER_HOUR = 60.0
 
 # Pressure conversion constants
 MB_TO_INHG_FACTOR = 0.02953  # millibar to inches of mercury conversion factor
@@ -82,9 +81,36 @@ WRITE_COMMANDS = {
 
 # ===================== CAPABILITIES FUNCTIONS =====================
 def compute_capabilities_writes():
+    """
+    Get list of available write commands for capabilities reporting.
+
+    Returns:
+        Sorted list of command names that can be written to the simulator
+
+    Example:
+        >>> commands = compute_capabilities_writes()
+        >>> len(commands) > 0
+        True
+        >>> 'GEAR_HANDLE' in commands
+        True
+    """
     return sorted(WRITE_COMMANDS.keys())
 
 def compute_capabilities_reads():
+    """
+    Get list of available read signals for capabilities reporting.
+
+    Returns:
+        List of dictionaries containing read capabilities with format:
+        [{"key": signal_name, "group": data_group, "field": field_name}, ...]
+
+    Example:
+        >>> reads = compute_capabilities_reads()
+        >>> len(reads) > 0
+        True
+        >>> all('key' in r and 'group' in r and 'field' in r for r in reads)
+        True
+    """
     reads = []
     for _, cfg in READ_SIGNALS.items():
         sink = cfg.get("sink")
@@ -98,9 +124,39 @@ def compute_capabilities_reads():
 # ===================== UTILITY FUNCTIONS =====================
 
 def clamp(v, lo, hi):
+    """
+    Clamp a value between minimum and maximum bounds.
+
+    Args:
+        v: Value to clamp
+        lo: Lower bound (inclusive)
+        hi: Upper bound (inclusive)
+
+    Returns:
+        Value clamped to [lo, hi] range
+
+    Example:
+        >>> clamp(15, 0, 10)
+        10
+        >>> clamp(-5, 0, 10)
+        0
+    """
     return max(lo, min(hi, v))
 
 def iso_utc_ms() -> str:
+    """
+    Generate ISO 8601 UTC timestamp with millisecond precision.
+
+    Returns:
+        ISO 8601 formatted timestamp string (e.g., "2023-12-25T10:30:45.123Z")
+
+    Example:
+        >>> result = iso_utc_ms()
+        >>> len(result) >= 20  # Minimum length for ISO format
+        True
+        >>> result.endswith('Z')  # Should end with Z for UTC
+        True
+    """
     t = time.time()
     whole = int(t)
     ms = int((t - whole) * MILLISECONDS_PER_SECOND)
@@ -108,11 +164,39 @@ def iso_utc_ms() -> str:
 
 # ===================== FSUIPC RAW DATA CONVERSIONS =====================
 def fs_lat_to_deg(raw: int) -> float:
-    # 64-bit FS units -> degrees
+    """
+    Convert FSUIPC 64-bit latitude units to degrees.
+
+    Args:
+        raw: Raw 64-bit latitude value from FSUIPC
+
+    Returns:
+        Latitude in decimal degrees (-90 to +90)
+
+    Example:
+        >>> fs_lat_to_deg(0)
+        0.0
+        >>> abs(fs_lat_to_deg(2**63)) <= 90  # Max value should be <= 90
+        True
+    """
     return (raw * 90.0) / FSUIPC_LAT_SCALE
 
 def fs_lon_to_deg(raw: int) -> float:
-    # 64-bit FS units -> degrees (2^64 = 65536^4)
+    """
+    Convert FSUIPC 64-bit longitude units to degrees.
+
+    Args:
+        raw: Raw 64-bit longitude value from FSUIPC
+
+    Returns:
+        Longitude in decimal degrees (-180 to +180)
+
+    Example:
+        >>> fs_lon_to_deg(0)
+        0.0
+        >>> abs(fs_lon_to_deg(2**63)) <= 180  # Max value should be <= 180
+        True
+    """
     return (raw * FSUIPC_TURN_FRACTION_TO_DEG) / FSUIPC_LON_SCALE
 
 def fs_alt_to_m(raw: int) -> float:
@@ -120,7 +204,21 @@ def fs_alt_to_m(raw: int) -> float:
     return raw / FSUIPC_SCALE_FACTOR_65536
 
 def fs_heading_true_deg(raw: int) -> float:
-    # fraction of turn * 2^32 -> degrees
+    """
+    Convert FSUIPC raw heading units to true heading in degrees.
+
+    Args:
+        raw: Raw heading value from FSUIPC (fraction of full turn)
+
+    Returns:
+        True heading in degrees (0-360)
+
+    Example:
+        >>> fs_heading_true_deg(0)
+        0.0
+        >>> 0 <= fs_heading_true_deg(2**32//4) <= 360  # Quarter turn = 90 degrees
+        True
+    """
     return (raw * FSUIPC_TURN_FRACTION_TO_DEG) / (FSUIPC_SCALE_FACTOR_65536 * FSUIPC_SCALE_FACTOR_65536)
 
 def fs_ground_speed_mps(raw: int) -> float:
@@ -206,17 +304,26 @@ TRANSFORMS = {
 # --- New transforms ---
 def knots128_to_kts(raw):
     try: return float(raw) / FSUIPC_SCALE_FACTOR_128
-    except: return None
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] knots128_to_kts failed for {raw}: {e}")
+        return None
 
 def vs_raw_to_fpm(raw):
     # raw = 256 * m/s  ->  ft/min
     try: return float(raw) * SECONDS_PER_MINUTE * METERS_TO_FEET / FSUIPC_SCALE_FACTOR_256
-    except: return None
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] vs_raw_to_fpm failed for {raw}: {e}")
+        return None
 
 def meters256_to_m(raw):
     # ground altitude in meters *256
     try: return float(raw) / FSUIPC_SCALE_FACTOR_256
-    except: return None
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] meters256_to_m failed for {raw}: {e}")
+        return None
 
 def magvar_raw_to_deg(raw):
     # 0x02A0: signed word; deg = raw * 360 / 65536, East positive (-ve = West in old docs)
@@ -229,7 +336,9 @@ def magvar_raw_to_deg(raw):
             val = int(raw)
             if val >= FSUIPC_SCALE_FACTOR_32768: val -= FSUIPC_SCALE_FACTOR_65536
         return (val * FSUIPC_TURN_FRACTION_TO_DEG) / FSUIPC_SCALE_FACTOR_65536
-    except:
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] magvar_raw_to_deg failed for {raw}: {e}")
         return None
 
 def bits_to_bool_0(raw):
@@ -238,7 +347,9 @@ def bits_to_bool_0(raw):
         if isinstance(raw, dict) and '0' in raw:
             return bool(raw['0'])
         return None
-    except:
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bits_to_bool_0 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_1(raw):
@@ -247,7 +358,9 @@ def bits_to_bool_1(raw):
         if isinstance(raw, dict) and '1' in raw:
             return bool(raw['1'])
         return None
-    except:
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bits_to_bool_1 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_2(raw):
@@ -256,7 +369,9 @@ def bits_to_bool_2(raw):
         if isinstance(raw, dict) and '2' in raw:
             return bool(raw['2'])
         return None
-    except:
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bits_to_bool_2 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_3(raw):
@@ -265,7 +380,9 @@ def bits_to_bool_3(raw):
         if isinstance(raw, dict) and '3' in raw:
             return bool(raw['3'])
         return None
-    except:
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bits_to_bool_3 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_4(raw):
@@ -274,13 +391,18 @@ def bits_to_bool_4(raw):
         if isinstance(raw, dict) and '4' in raw:
             return bool(raw['4'])
         return None
-    except:
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bits_to_bool_4 failed for {raw}: {e}")
         return None
 
 def nonzero_to_bool(raw):
     """Convert non-zero values to True, zero to False"""
     try: return bool(int(raw))
-    except: return None
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] nonzero_to_bool failed for {raw}: {e}")
+        return None
 
 
 
@@ -289,12 +411,18 @@ def baro_to_inhg(raw):
     try:
         mb = float(raw) / FSUIPC_SCALE_FACTOR_16  # Convert to millibars
         return mb * MB_TO_INHG_FACTOR     # Convert mb to inHg
-    except: return None
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] baro_to_inhg failed for {raw}: {e}")
+        return None
 
 # === U32 → lower16 helpers (from probe findings) ===
 def lower16(u):
-    try: return int(u) & 0xFFFF
-    except: return None
+    try: return int(u) & FSUIPC_SIGNED_16BIT_MASK
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] lower16 failed for {u}: {e}")
+        return None
 
 def u32_baro_to_inhg(u):
     v = lower16(u)
@@ -322,7 +450,9 @@ def gs_u32_to_kts(raw):
     try:
         # 0x02B4 = ground speed en (m/s) * 65536
         return (float(raw) / FSUIPC_SCALE_FACTOR_65536) * MPS_TO_KTS  # m/s → kts
-    except:
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] gs_u32_to_kts failed for {raw}: {e}")
         return None
 
 TRANSFORMS.update({
