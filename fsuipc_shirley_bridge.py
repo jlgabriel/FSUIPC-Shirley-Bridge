@@ -17,6 +17,49 @@ DEBUG_FSUIPC_MESSAGES = False
 # Set to True to enable detailed debugging of FSUIPC messages, JSON output, and broadcast info
 FIRST_PAYLOAD = False
 
+# ===================== FSUIPC Constants =====================
+# Conversion factors
+METERS_TO_FEET = 3.28084
+MPS_TO_KTS = 1.943844
+
+# FSUIPC scaling factors
+FSUIPC_SCALE_FACTOR_65536 = 65536.0
+FSUIPC_SCALE_FACTOR_16383 = 16383
+FSUIPC_SCALE_FACTOR_32768 = 32768
+FSUIPC_SCALE_FACTOR_256 = 256.0
+FSUIPC_SCALE_FACTOR_128 = 128.0
+FSUIPC_SCALE_FACTOR_16 = 16.0
+
+# Angular conversion factors
+FSUIPC_TURN_FRACTION_TO_DEG = 360.0
+FSUIPC_LAT_SCALE = 10001750.0 * 65536.0 * 65536.0
+FSUIPC_LON_SCALE = 65536.0 * 65536.0 * 65536.0 * 65536.0
+
+# Thresholds
+BRAKE_PEDAL_THRESHOLD = 200
+PARKING_BRAKE_THRESHOLD = 1000
+ZERO_THRESHOLD_EPSILON = 1e-6
+POSITION_CHANGE_EPSILON = 1e-7
+
+# Barometric pressure validation ranges (raw values)
+BARO_RAW_MIN = 12800  # ~800 mb
+BARO_RAW_MAX = 17600  # ~1100 mb
+
+# Time and frequency constants
+MILLISECONDS_PER_SECOND = 1000
+SECONDS_PER_MINUTE = 60.0
+MINUTES_PER_HOUR = 60.0
+
+# Pressure conversion constants
+MB_TO_INHG_FACTOR = 0.02953  # millibar to inches of mercury conversion factor
+
+# FSUIPC bit masks
+FSUIPC_SIGNED_16BIT_MASK = 0xFFFF
+FSUIPC_SIGNED_16BIT_OFFSET = 0x10000
+
+# Throttle max value
+FSUIPC_THROTTLE_MAX = 16384
+
 # --- Config de frenado ---
 USE_BRAKES_ON_INCLUDES_PARKING = True  # True: brakesOn = pedales OR parking
 
@@ -25,14 +68,14 @@ WRITE_COMMANDS = {
     "GEAR_HANDLE": {  # 0=retracted, 1=down
         "type": "offset",
         "address": 0x0BE8, "size": 4, "dtype": "int",
-        "encode": lambda v: 16383 if int(float(v)) else 0,
+        "encode": lambda v: FSUIPC_SCALE_FACTOR_16383 if int(float(v)) else 0,
     },
     "throttle": {     # accepts -1..1 or raw value [-16384..16384]
         "type": "offset",
         "address": 0x088C, "size": 2, "dtype": "short",
         "encode": lambda v: (
-            max(0, min(16384, round((float(v)+1.0)*0.5*16384.0))) if -1.0 <= float(v) <= 1.0
-            else max(-16384, min(16384, int(float(v))))
+            max(0, min(FSUIPC_THROTTLE_MAX, round((float(v)+1.0)*0.5*FSUIPC_THROTTLE_MAX))) if -1.0 <= float(v) <= 1.0
+            else max(-FSUIPC_THROTTLE_MAX, min(FSUIPC_THROTTLE_MAX, int(float(v))))
         ),
     },
 }
@@ -41,8 +84,7 @@ def compute_capabilities_writes():
     return sorted(WRITE_COMMANDS.keys())
 
 # ===================== Constants / Helpers =====================
-METERS_TO_FEET = 3.28084
-MPS_TO_KTS = 1.943844
+# Note: METERS_TO_FEET and MPS_TO_KTS are now defined above with other FSUIPC constants
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
@@ -50,33 +92,33 @@ def clamp(v, lo, hi):
 def iso_utc_ms() -> str:
     t = time.time()
     whole = int(t)
-    ms = int((t - whole) * 1000.0)
+    ms = int((t - whole) * MILLISECONDS_PER_SECOND)
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + f".{ms:03d}Z"
 
 # ---- FSUIPC raw -> human conversions ----
 def fs_lat_to_deg(raw: int) -> float:
     # 64-bit FS units -> degrees
-    return (raw * 90.0) / (10001750.0 * 65536.0 * 65536.0)
+    return (raw * 90.0) / FSUIPC_LAT_SCALE
 
 def fs_lon_to_deg(raw: int) -> float:
     # 64-bit FS units -> degrees (2^64 = 65536^4)
-    return (raw * 360.0) / (65536.0 * 65536.0 * 65536.0 * 65536.0)
+    return (raw * FSUIPC_TURN_FRACTION_TO_DEG) / FSUIPC_LON_SCALE
 
 def fs_alt_to_m(raw: int) -> float:
     # meters * 65536 -> meters
-    return raw / 65536.0
+    return raw / FSUIPC_SCALE_FACTOR_65536
 
 def fs_heading_true_deg(raw: int) -> float:
     # fraction of turn * 2^32 -> degrees
-    return (raw * 360.0) / (65536.0 * 65536.0)
+    return (raw * FSUIPC_TURN_FRACTION_TO_DEG) / (FSUIPC_SCALE_FACTOR_65536 * FSUIPC_SCALE_FACTOR_65536)
 
 def fs_ground_speed_mps(raw: int) -> float:
     # 65536 * m/s -> m/s
-    return raw / 65536.0
+    return raw / FSUIPC_SCALE_FACTOR_65536
 
 def fs_angle_deg(raw: int) -> float:
     # For pitch/bank (same factor as heading)
-    return (raw * 360.0) / (65536.0 * 65536.0)
+    return (raw * FSUIPC_TURN_FRACTION_TO_DEG) / (FSUIPC_SCALE_FACTOR_65536 * FSUIPC_SCALE_FACTOR_65536)
 
 
 # ===================== FSUIPC signals to read (declarative) =====================
@@ -154,17 +196,17 @@ TRANSFORMS = {
 
 # --- New transforms ---
 def knots128_to_kts(raw):
-    try: return float(raw) / 128.0
+    try: return float(raw) / FSUIPC_SCALE_FACTOR_128
     except: return None
 
 def vs_raw_to_fpm(raw):
     # raw = 256 * m/s  ->  ft/min
-    try: return float(raw) * 60.0 * 3.28084 / 256.0
+    try: return float(raw) * SECONDS_PER_MINUTE * METERS_TO_FEET / FSUIPC_SCALE_FACTOR_256
     except: return None
 
 def meters256_to_m(raw):
     # ground altitude in meters *256
-    try: return float(raw) / 256.0
+    try: return float(raw) / FSUIPC_SCALE_FACTOR_256
     except: return None
 
 def magvar_raw_to_deg(raw):
@@ -173,11 +215,11 @@ def magvar_raw_to_deg(raw):
         # interpret as int16
         if isinstance(raw, str) and raw.startswith("0x"):
             val = int(raw, 16)
-            if val >= 0x8000: val -= 0x10000
+            if val >= 0x8000: val -= FSUIPC_SIGNED_16BIT_OFFSET
         else:
             val = int(raw)
-            if val >= 32768: val -= 65536
-        return (val * 360.0) / 65536.0
+            if val >= FSUIPC_SCALE_FACTOR_32768: val -= FSUIPC_SCALE_FACTOR_65536
+        return (val * FSUIPC_TURN_FRACTION_TO_DEG) / FSUIPC_SCALE_FACTOR_65536
     except:
         return None
 
@@ -236,8 +278,8 @@ def nonzero_to_bool(raw):
 def baro_to_inhg(raw):
     """Convert barometric pressure from millibars*16 to inches of mercury"""
     try:
-        mb = float(raw) / 16.0  # Convert to millibars
-        return mb * 0.02953     # Convert mb to inHg
+        mb = float(raw) / FSUIPC_SCALE_FACTOR_16  # Convert to millibars
+        return mb * MB_TO_INHG_FACTOR     # Convert mb to inHg
     except: return None
 
 # === U32 → lower16 helpers (from probe findings) ===
@@ -248,29 +290,29 @@ def lower16(u):
 def u32_baro_to_inhg(u):
     v = lower16(u)
     if v is None: return None
-    mb = v / 16.0
-    return mb * 0.02953  # 16212→1013.25mb→29.92 inHg
+    mb = v / FSUIPC_SCALE_FACTOR_16
+    return mb * MB_TO_INHG_FACTOR  # 16212→1013.25mb→29.92 inHg
 
 def u32_to_pct_16383(u):
     v = lower16(u)
     if v is None: return None
-    return max(0.0, min(100.0, (v / 16383.0) * 100.0))
+    return max(0.0, min(100.0, (v / FSUIPC_SCALE_FACTOR_16383) * 100.0))
 
 def u32_to_bool_parking(u):
     v = lower16(u)
     if v is None: return None
-    return v >= 1000   # tolerante (0/32767 típico)
+    return v >= PARKING_BRAKE_THRESHOLD   # tolerante (0/32767 típico)
 
 def u32_signed16_to_magdeg(u):
     v = lower16(u)
     if v is None: return None
-    if v >= 32768: v -= 65536
-    return (v * 360.0) / 65536.0
+    if v >= FSUIPC_SCALE_FACTOR_32768: v -= FSUIPC_SCALE_FACTOR_65536
+    return (v * FSUIPC_TURN_FRACTION_TO_DEG) / FSUIPC_SCALE_FACTOR_65536
 
 def gs_u32_to_kts(raw):
     try:
         # 0x02B4 = ground speed en (m/s) * 65536
-        return (float(raw) / 65536.0) * 1.943844  # m/s → kts
+        return (float(raw) / FSUIPC_SCALE_FACTOR_65536) * MPS_TO_KTS  # m/s → kts
     except:
         return None
 
@@ -490,7 +532,7 @@ class SimData:
 
             if alt_ft is not None:
                 if self._last_alt_ft is not None and self._last_vs_ts is not None:
-                    dt_min = max(1e-6, (now - self._last_vs_ts) / 60.0)
+                    dt_min = max(ZERO_THRESHOLD_EPSILON, (now - self._last_vs_ts) / SECONDS_PER_MINUTE)
                     self._vs_fpm = (alt_ft - self._last_alt_ft) / dt_min
                 self._last_alt_ft = alt_ft
                 self._last_vs_ts = now
@@ -501,7 +543,7 @@ class SimData:
 
                 # Only calculate if we have previous position and position actually changed
                 if (self._last_lat is not None and self._last_lon is not None and
-                    (abs(lat - self._last_lat) > 1e-7 or abs(lon - self._last_lon) > 1e-7)):
+                    (abs(lat - self._last_lat) > POSITION_CHANGE_EPSILON or abs(lon - self._last_lon) > POSITION_CHANGE_EPSILON)):
                     self._track_deg = self._bearing_deg(self._last_lat, self._last_lon, lat, lon)
 
                 # Update last position
@@ -766,7 +808,7 @@ class SimData:
             return None
         return (x % 360.0 + 360.0) % 360.0
 
-    def _nz(self, x, eps=1e-6):
+    def _nz(self, x, eps=ZERO_THRESHOLD_EPSILON):
         """Avoid values close to zero that become '-0'"""
         if x is None:
             return None
@@ -893,7 +935,7 @@ class FSUIPCWSClient:
             baro_inhg = u32_baro_to_inhg(payload["BARO_0332_U32"])
         if baro_inhg is None and "BARO_0330_U32" in payload:
             raw16 = lower16(payload["BARO_0330_U32"])
-            if raw16 is not None and 12800 <= raw16 <= 17600:  # rango razonable: 800–1100 mb
+            if raw16 is not None and BARO_RAW_MIN <= raw16 <= BARO_RAW_MAX:  # rango razonable: 800–1100 mb
                 baro_inhg = u32_baro_to_inhg(payload["BARO_0330_U32"])
         if baro_inhg is not None:
             asyncio.create_task(self.sim_data.update_environment_partial(pressure_inhg=baro_inhg))
@@ -930,7 +972,7 @@ class FSUIPCWSClient:
         if bl is not None or br is not None:
             L = bl or 0
             R = br or 0
-            threshold = 200
+            threshold = BRAKE_PEDAL_THRESHOLD
             brakes_on = (L > threshold) or (R > threshold)
 
         # Parking según flag
@@ -1041,7 +1083,7 @@ class FSUIPCWSClient:
         if bl is not None or br is not None:
             L = bl or 0
             R = br or 0
-            threshold = 200           # 0..16383
+            threshold = BRAKE_PEDAL_THRESHOLD           # 0..16383
             brakes_on = (L > threshold) or (R > threshold)
 
         # OR con parking
