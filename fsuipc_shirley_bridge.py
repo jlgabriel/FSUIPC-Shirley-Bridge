@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, Set
 import websockets
 import websockets.exceptions
 
-# ===================== Configuration =====================
+# ===================== CONFIGURATION =====================
 FSUIPC_WS_URL = "ws://localhost:2048/fsuipc/"  # FSUIPC WebSocket Server (Paul Henty)
 WS_HOST = "localhost"
 WS_PORT = 2992
@@ -17,7 +17,7 @@ DEBUG_FSUIPC_MESSAGES = False
 # Set to True to enable detailed debugging of FSUIPC messages, JSON output, and broadcast info
 FIRST_PAYLOAD = False
 
-# ===================== FSUIPC Constants =====================
+# ===================== FSUIPC CONSTANTS =====================
 # Conversion factors
 METERS_TO_FEET = 3.28084
 MPS_TO_KTS = 1.943844
@@ -80,11 +80,22 @@ WRITE_COMMANDS = {
     },
 }
 
+# ===================== CAPABILITIES FUNCTIONS =====================
 def compute_capabilities_writes():
     return sorted(WRITE_COMMANDS.keys())
 
-# ===================== Constants / Helpers =====================
-# Note: METERS_TO_FEET and MPS_TO_KTS are now defined above with other FSUIPC constants
+def compute_capabilities_reads():
+    reads = []
+    for _, cfg in READ_SIGNALS.items():
+        sink = cfg.get("sink")
+        if not sink:
+            continue
+        if isinstance(sink, tuple) and len(sink) == 2:
+            g, f = sink
+            reads.append({"key": cfg.get("name",""), "group": g, "field": f})
+    return reads
+
+# ===================== UTILITY FUNCTIONS =====================
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
@@ -95,7 +106,7 @@ def iso_utc_ms() -> str:
     ms = int((t - whole) * MILLISECONDS_PER_SECOND)
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + f".{ms:03d}Z"
 
-# ---- FSUIPC raw -> human conversions ----
+# ===================== FSUIPC RAW DATA CONVERSIONS =====================
 def fs_lat_to_deg(raw: int) -> float:
     # 64-bit FS units -> degrees
     return (raw * 90.0) / FSUIPC_LAT_SCALE
@@ -121,9 +132,7 @@ def fs_angle_deg(raw: int) -> float:
     return (raw * FSUIPC_TURN_FRACTION_TO_DEG) / (FSUIPC_SCALE_FACTOR_65536 * FSUIPC_SCALE_FACTOR_65536)
 
 
-# ===================== FSUIPC signals to read (declarative) =====================
-# Note: we use 'lat'/'lon' to receive degrees directly; Easy altitude in meters (0x6020 float).
-# U32 variants used where probe confirmed they work (BARO, BRAKES, MAGVAR, IAS, LIGHTS, PITOT)
+# ===================== FSUIPC SIGNAL DEFINITIONS =====================
 READ_SIGNALS = {
     # --- Position ---
     "LatitudeDeg":   {"address": 0x0560, "type": "lat",   "size": 8, "sink": ("gps", "latitude")},      # deg
@@ -175,7 +184,7 @@ READ_SIGNALS = {
 for _k, _cfg in READ_SIGNALS.items():
     _cfg.setdefault("sink", None)
 
-# Transforms to units expected by SimData.update_*_partial()
+# ===================== DATA TRANSFORM FUNCTIONS =====================
 def raw_ang_to_deg(raw):
     return fs_angle_deg(raw) if raw is not None else None
 
@@ -185,7 +194,7 @@ def raw_ang_to_deg_pitch(raw):
 def raw_hdg_to_deg(raw):    return (fs_heading_true_deg(raw) % 360.0) if raw is not None else None
 def mps_to_mps(raw):        return fs_ground_speed_mps(raw) if raw is not None else None
 
-# === transforms (add alongside existing ones) ===
+# ===================== TRANSFORM REGISTRY =====================
 
 TRANSFORMS = {
     "raw_ang_to_deg": raw_ang_to_deg,
@@ -340,7 +349,7 @@ TRANSFORMS.update({
     "gs_u32_to_kts": gs_u32_to_kts
 })
 
-# ===================== Mapping sinks -> Shirley keys =====================
+# ===================== SINK TO SHIRLEY MAPPINGS =====================
 _GPS_SINK_TO_SHIRLEY = {
     "latitude":           "position.latitudeDeg",
     "longitude":          "position.longitudeDeg",
@@ -403,18 +412,7 @@ _SIMULATION_SINK_TO_SHIRLEY = {
     "aircraft_name": "simulation.aircraftName",
 }
 
-def compute_capabilities_reads():
-    reads = []
-    for _, cfg in READ_SIGNALS.items():
-        sink = cfg.get("sink")
-        if not sink:
-            continue
-        if isinstance(sink, tuple) and len(sink) == 2:
-            g, f = sink
-            reads.append({"key": cfg.get("name",""), "group": g, "field": f})
-    return reads
-
-# ===================== ForeFlight-style input data =====================
+# ===================== DATA MODEL CLASSES =====================
 @dataclass
 class XGPSData:
     sim_name: str
@@ -444,7 +442,7 @@ def validate_position_data(lat: float = None, lon: float = None, alt_ft: float =
     except (TypeError, ValueError):
         return False
 
-# ===================== SimData model (Shirley format) =====================
+# ===================== SIMDATA CLASS =====================
 class SimData:
     """
     Maintains the last XGPS/XATT and builds the JSON that Shirley consumes:
@@ -814,7 +812,7 @@ class SimData:
             return None
         return 0.0 if abs(x) < eps else x
 
-# ===================== Cliente FSUIPC WebSocket =====================
+# ===================== FSUIPC WEBSOCKET CLIENT =====================
 class FSUIPCWSClient:
     """
     WebSocket client to FSUIPC WebSocket Server.
@@ -824,7 +822,7 @@ class FSUIPCWSClient:
         self.sim_data = sim_data
         self.url = url
         self.ws: Optional[Any] = None  # WebSocket client connection
-        self.lastDataReceivedTime: Optional[float] = None  # useful for UI/logging
+        self.last_data_received_time: Optional[float] = None  # useful for UI/logging
 
     async def run(self):
         while True:
@@ -1107,7 +1105,7 @@ class FSUIPCWSClient:
         if auto_environment_kwargs:
             asyncio.create_task(self.sim_data.update_environment_partial(**auto_environment_kwargs))
 
-        self.lastDataReceivedTime = time.time()
+        self.last_data_received_time = time.time()
 
     async def write_offset(self, address: int, value: int, *, size: int, dtype: str = "int") -> bool:
         if not self.ws:
@@ -1127,7 +1125,7 @@ class FSUIPCWSClient:
             print(f"[FSUIPCWS] Write error: {e!r}")
             return False
 
-# ===================== WebSocket Server for Shirley =====================
+# ===================== SHIRLEY WEBSOCKET SERVER =====================
 class ShirleyWebSocketServer:
     """
     - Accepts clients (including Shirley) at ws://host:port/api/v1
@@ -1282,7 +1280,7 @@ class ShirleyWebSocketServer:
                 self.server.close()
                 await self.server.wait_closed()
 
-# ===================== Orchestrator =====================
+# ===================== MAIN ORCHESTRATOR =====================
 async def main():
     sim_data = SimData()
     fsuipc = FSUIPCWSClient(sim_data, url=FSUIPC_WS_URL)
