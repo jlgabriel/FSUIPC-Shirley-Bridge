@@ -17,6 +17,9 @@ DEBUG_FSUIPC_MESSAGES = False
 # Set to True to enable detailed debugging of FSUIPC messages, JSON output, and broadcast info
 FIRST_PAYLOAD = False
 
+# --- Config de frenado ---
+USE_BRAKES_ON_INCLUDES_PARKING = True  # True: brakesOn = pedales OR parking
+
 # ===================== Declarative writes =====================
 WRITE_COMMANDS = {
     "GEAR_HANDLE": {  # 0=retracted, 1=down
@@ -75,19 +78,21 @@ def fs_angle_deg(raw: int) -> float:
     # For pitch/bank (same factor as heading)
     return (raw * 360.0) / (65536.0 * 65536.0)
 
+
 # ===================== FSUIPC signals to read (declarative) =====================
 # Note: we use 'lat'/'lon' to receive degrees directly; Easy altitude in meters (0x6020 float).
+# U32 variants used where probe confirmed they work (BARO, BRAKES, MAGVAR, IAS, LIGHTS, PITOT)
 READ_SIGNALS = {
     # --- Position ---
     "LatitudeDeg":   {"address": 0x0560, "type": "lat",   "size": 8, "sink": ("gps", "latitude")},      # deg
     "LongitudeDeg":  {"address": 0x0568, "type": "lon",   "size": 8, "sink": ("gps", "longitude")},     # deg
     "AltitudeM":     {"address": 0x6020, "type": "float", "size": 8, "sink": ("gps", "alt_msl_meters")},# m
 
-    "GroundSpeedKts":{"address": 0x02B4, "type": "uint",  "size": 4, "transform": "knots128_to_kts", "sink": ("gps", "ground_speed_kts")},
+    "GroundSpeedKts":{"address": 0x02B4, "type": "uint",  "size": 4, "transform": "gs_u32_to_kts", "sink": ("gps", "ground_speed_kts")},
 
     # --- Airspeeds / VS ---
-    "IASraw":   {"address": 0x02BC, "type": "uint", "size": 4, "transform": "knots128_to_kts", "sink": ("gps", "ias_kts")},
-    "VSraw":    {"address": 0x02C8, "type": "int",  "size": 4, "transform": "vs_raw_to_fpm",   "sink": ("gps", "vs_fpm_raw")},
+    "IASraw_U32":   {"address": 0x02BC, "type": "uint", "size": 4, "transform": "knots128_to_kts", "sink": ("gps", "ias_kts")},
+    "VSraw":        {"address": 0x02C8, "type": "int",  "size": 4, "transform": "vs_raw_to_fpm",   "sink": ("gps", "vs_fpm_raw")},
 
     # --- AGL via ground altitude ---
     "GroundAltRaw": {"address": 0x0020, "type": "int", "size": 4, "transform": "meters256_to_m", "sink": ("gps", "ground_alt_m")},
@@ -97,23 +102,36 @@ READ_SIGNALS = {
     "PitchRaw":      {"address": 0x0578, "type": "int",   "size": 4, "transform": "raw_ang_to_deg_pitch", "sink": ("att", "pitch_deg")},
     "BankRaw":       {"address": 0x057C, "type": "int",   "size": 4, "transform": "raw_ang_to_deg", "sink": ("att", "roll_deg")},
 
-    # --- Magnetic variation (for magnetic heading) ---
-    "MagVarRaw": {"address": 0x02A0, "type": "short", "size": 2, "transform": "magvar_raw_to_deg", "sink": ("att", "mag_var_deg")},
+    # --- Magnetic variation (U32 variant) ---
+    "MagVar_U32": {"address": 0x02A0, "type": "uint", "size": 4, "transform": "u32_signed16_to_magdeg", "sink": ("att", "mag_var_deg")},
 
-    # --- Lights (bitfield from 0x0D0C) ---
-    "LIGHT_NAV":     {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_0", "sink": ("lights", "nav_on")},
-    "LIGHT_LANDING": {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_2", "sink": ("lights", "landing_on")},
-    "LIGHT_STROBE":  {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_4", "sink": ("lights", "strobe_on")},
-    "LIGHT_TAXI":    {"address": 0x0D0C, "type": "bits", "size": 2, "transform": "bits_to_bool_3", "sink": ("lights", "taxi_on")},
+    # --- Luces (U32 bitmask confirmed working) ---
+    "LIGHTS_BITS32": {"address": 0x0D0C, "type": "uint", "size": 4, "sink": ("lights", "bitmask")},
 
-    # --- Systems (individual switches/status) ---
-    "PITOT_HEAT":    {"address": 0x029C, "type": "byte",  "size": 1, "transform": "nonzero_to_bool", "sink": ("systems", "pitot_heat_on")},
-    "BRAKES":        {"address": 0x0BC8, "type": "ushort", "size": 2, "transform": "nonzero_to_bool", "sink": ("systems", "brakes_on")},
-    "BATTERY_MAIN":  {"address": 0x281C, "type": "uint",  "size": 4, "transform": "nonzero_to_bool", "sink": ("systems", "battery_main_on")},
+    # --- Sistemas (U32 variants confirmed) ---
+    "BATTERY_MAIN":   {"address": 0x281C, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("systems", "battery_main_on")},
+    "PITOT_HEAT_U32": {"address": 0x029C, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("systems", "pitot_heat_on")},
 
-    # --- Barometric Pressure (works in MSFS) ---
-    "BARO_PRESSURE": {"address": 0x0330, "type": "ushort", "size": 2, "transform": "baro_to_inhg", "sink": ("environment", "pressure_inhg")},
+    # --- BARO (G1000 → primario, U32 confirmed) ---
+    "BARO_0332_U32": {"address": 0x0332, "type": "uint", "size": 4, "transform": "u32_baro_to_inhg", "sink": ("environment", "baro_0332")},
+    "BARO_0330_U32": {"address": 0x0330, "type": "uint", "size": 4, "transform": "u32_baro_to_inhg", "sink": ("environment", "baro_0330")},
+
+    # --- Frenos/parking (U32 confirmed) ---
+    "brakeLeftU":    {"address": 0x0BC4, "type": "uint", "size": 4, "sink": None},
+    "brakeRightU":   {"address": 0x0BC6, "type": "uint", "size": 4, "sink": None},
+    "parkingBrakeU": {"address": 0x0BC8, "type": "uint", "size": 4, "sink": None},
+
+    # --- Controles (para flaps/gear percentage) ---
+    "flapsHandle":   {"address": 0x0BDC, "type": "uint", "size": 4, "transform": "u32_to_pct_16383", "sink": ("levers", "flaps_pct")},
+    "gearHandle":    {"address": 0x0BE8, "type": "uint", "size": 4, "transform": "u32_to_pct_16383", "sink": ("levers", "gear_pct")},
+
+    # --- Nombre aeronave ---
+    "aircraftNameStr": {"address": 0x3D00, "type": "string", "size": 256, "sink": ("aircraft", "name")},
 }
+
+# Normaliza: si alguna señal no define 'sink', déjalo en None
+for _k, _cfg in READ_SIGNALS.items():
+    _cfg.setdefault("sink", None)
 
 # Transforms to units expected by SimData.update_*_partial()
 def raw_ang_to_deg(raw):
@@ -222,6 +240,40 @@ def baro_to_inhg(raw):
         return mb * 0.02953     # Convert mb to inHg
     except: return None
 
+# === U32 → lower16 helpers (from probe findings) ===
+def lower16(u):
+    try: return int(u) & 0xFFFF
+    except: return None
+
+def u32_baro_to_inhg(u):
+    v = lower16(u)
+    if v is None: return None
+    mb = v / 16.0
+    return mb * 0.02953  # 16212→1013.25mb→29.92 inHg
+
+def u32_to_pct_16383(u):
+    v = lower16(u)
+    if v is None: return None
+    return max(0.0, min(100.0, (v / 16383.0) * 100.0))
+
+def u32_to_bool_parking(u):
+    v = lower16(u)
+    if v is None: return None
+    return v >= 1000   # tolerante (0/32767 típico)
+
+def u32_signed16_to_magdeg(u):
+    v = lower16(u)
+    if v is None: return None
+    if v >= 32768: v -= 65536
+    return (v * 360.0) / 65536.0
+
+def gs_u32_to_kts(raw):
+    try:
+        # 0x02B4 = ground speed en (m/s) * 65536
+        return (float(raw) / 65536.0) * 1.943844  # m/s → kts
+    except:
+        return None
+
 TRANSFORMS.update({
     "knots128_to_kts": knots128_to_kts,
     "vs_raw_to_fpm":   vs_raw_to_fpm,
@@ -237,6 +289,13 @@ TRANSFORMS.update({
     "nonzero_to_bool": nonzero_to_bool,
     # Weather transforms for environment
     "baro_to_inhg": baro_to_inhg,
+    # U32 transforms (from probe findings)
+    "lower16": lower16,
+    "u32_baro_to_inhg": u32_baro_to_inhg,
+    "u32_to_pct_16383": u32_to_pct_16383,
+    "u32_to_bool_parking": u32_to_bool_parking,
+    "u32_signed16_to_magdeg": u32_signed16_to_magdeg,
+    "gs_u32_to_kts": gs_u32_to_kts
 })
 
 # ===================== Mapping sinks -> Shirley keys =====================
@@ -271,7 +330,7 @@ _LIGHTS_SINK_TO_SHIRLEY = {
 
 _SYSTEMS_SINK_TO_SHIRLEY = {
     "pitot_heat_on": "systems.pitotHeatSwitchOn",
-    "brakes_on": "systems.brakesOn",
+    # "brakes_on": "systems.brakesOn",
     "battery_main_on": "systems.batteryOn.main",
 }
 
@@ -298,40 +357,20 @@ _ENVIRONMENT_SINK_TO_SHIRLEY = {
     "pressure_inhg": "environment.seaLevelPressureInchesMercury",
 }
 
+_SIMULATION_SINK_TO_SHIRLEY = {
+    "aircraft_name": "simulation.aircraftName",
+}
+
 def compute_capabilities_reads():
-    """Generates the list of 'reads' fields from all sink mappings."""
-    out = set()
-
-    # Existing groups
+    reads = []
     for _, cfg in READ_SIGNALS.items():
-        sink_group, sink_field = cfg["sink"]
-        if sink_group == "gps":
-            key = _GPS_SINK_TO_SHIRLEY.get(sink_field)
-            if key: out.add(key)
-        elif sink_group == "att":
-            key = _ATT_SINK_TO_SHIRLEY.get(sink_field)
-            if key: out.add(key)
-
-    # New groups - add all possible keys from sink mappings
-    for shirley_key in _LIGHTS_SINK_TO_SHIRLEY.values():
-        out.add(shirley_key)
-    for shirley_key in _SYSTEMS_SINK_TO_SHIRLEY.values():
-        out.add(shirley_key)
-    for shirley_key in _AUTOPILOT_SINK_TO_SHIRLEY.values():
-        out.add(shirley_key)
-    for shirley_key in _LEVERS_SINK_TO_SHIRLEY.values():
-        out.add(shirley_key)
-    for shirley_key in _INDICATORS_SINK_TO_SHIRLEY.values():
-        out.add(shirley_key)
-    for shirley_key in _ENVIRONMENT_SINK_TO_SHIRLEY.values():
-        out.add(shirley_key)
-
-    # Software-derived fields
-    out.add("position.verticalSpeedUpFpm")
-    out.add("attitude.magneticHeadingDeg")
-    out.add("attitude.trueGroundTrackDeg")
-
-    return sorted(out)
+        sink = cfg.get("sink")
+        if not sink:
+            continue
+        if isinstance(sink, tuple) and len(sink) == 2:
+            g, f = sink
+            reads.append({"key": cfg.get("name",""), "group": g, "field": f})
+    return reads
 
 # ===================== ForeFlight-style input data =====================
 @dataclass
@@ -654,6 +693,14 @@ class SimData:
                     if len(parts) == 2 and parts[0] == "environment":
                         environment[parts[1]] = float(self._environment_data[sink_key])
 
+            # Build simulation group
+            simulation = {}
+            for sink_key, shirley_key in _SIMULATION_SINK_TO_SHIRLEY.items():
+                if sink_key in self._systems_data:  # aircraft_name está en systems_data
+                    parts = shirley_key.split('.')
+                    if len(parts) == 2 and parts[0] == "simulation":
+                        simulation[parts[1]] = str(self._systems_data[sink_key])
+
             # CRITICAL: Ensure pos and att are added to output
             if pos:
                 out["position"] = pos
@@ -678,6 +725,7 @@ class SimData:
             if levers: out["levers"] = levers
             if indicators: out["indicators"] = indicators
             if environment: out["environment"] = environment
+            if simulation: out["simulation"] = simulation
 
             # Validar datos críticos antes de enviar
             if pos.get("latitudeDeg") is not None:
@@ -806,12 +854,6 @@ class FSUIPCWSClient:
         # Generic parser using table and partial updates
         payload = data.get("data") or data.get("values") or data
 
-        # Log data quality (commented out to reduce verbosity)
-        # if isinstance(payload, dict) and payload:
-        #     valid_keys = [k for k, v in payload.items() if v is not None]
-        #     if len(valid_keys) > 0:
-        #         print(f"[FSUIPCWS] Valid data fields: {len(valid_keys)}/{len(payload)}")
-
         # some builds return 'values' as a list of {name, value}
         if isinstance(payload, list):
             try:
@@ -822,64 +864,206 @@ class FSUIPCWSClient:
         if not isinstance(payload, dict):
             return
 
-        gps_kwargs = {}   # latitude, longitude, alt_msl_meters, track_deg, ground_speed_kts
-        att_kwargs = {}   # heading_deg, pitch_deg, roll_deg
-        lights_kwargs = {} # nav_on, landing_on, taxi_on, strobe_on
-        systems_kwargs = {} # pitot_heat_on, brakes_on, battery_main_on
-        environment_kwargs = {} # wind_dir_deg, wind_speed_kts, pressure_inhg, visibility_miles, temp_celsius
+        # === MAPEO DIRECTO A SIMDATA_SCHEMAS (sin sobreescribir con null) ===
+        # Construir snapshot actual para no sobreescribir con None
+        current_snapshot = asyncio.create_task(self.sim_data.get_snapshot())
+        
+        # Indicadores principales
+        if "IASraw_U32" in payload:
+            ias = knots128_to_kts(payload["IASraw_U32"])
+            if ias is not None:
+                asyncio.create_task(self.sim_data.update_gps_partial(ias_kts=ias))
+        
+        if "VSraw" in payload:
+            vs = vs_raw_to_fpm(payload["VSraw"])
+            if vs is not None:
+                asyncio.create_task(self.sim_data.update_gps_partial(vs_fpm_raw=vs))
+        
+        # GroundSpeedKts: NO procesar manualmente - ya está declarado con transform automático
+        # El sistema automático se encarga de: raw → knots128_to_kts → sink("gps", "ground_speed_kts")
+        
+        if "MagVar_U32" in payload:
+            magvar = u32_signed16_to_magdeg(payload["MagVar_U32"])
+            if magvar is not None:
+                asyncio.create_task(self.sim_data.update_att_partial(mag_var_deg=magvar))
 
-        for key, cfg in READ_SIGNALS.items():
-            if key not in payload:
-                continue
-            val = payload[key]
-            # apply transform if exists
-            tf = cfg.get("transform")
-            if tf:
-                val = TRANSFORMS[tf](val)
-            # dispatch to SimData according to 'sink' (prefer the first one that arrives)
-            sink_group, sink_field = cfg["sink"]
-            if sink_group == "gps":
-                if val is not None and sink_field not in gps_kwargs:
-                    gps_kwargs[sink_field] = val
-            elif sink_group == "att":
-                if val is not None and sink_field not in att_kwargs:
-                    att_kwargs[sink_field] = val
-            elif sink_group == "lights":
-                if val is not None and sink_field not in lights_kwargs:
-                    lights_kwargs[sink_field] = val
-            elif sink_group == "systems":
-                if val is not None and sink_field not in systems_kwargs:
-                    systems_kwargs[sink_field] = val
-            elif sink_group == "environment":
-                if val is not None and sink_field not in environment_kwargs:
-                    environment_kwargs[sink_field] = val
+        # BARO (prefiere 0332; validar rango si usas 0330 como fallback)
+        baro_inhg = None
+        if "BARO_0332_U32" in payload:
+            baro_inhg = u32_baro_to_inhg(payload["BARO_0332_U32"])
+        if baro_inhg is None and "BARO_0330_U32" in payload:
+            raw16 = lower16(payload["BARO_0330_U32"])
+            if raw16 is not None and 12800 <= raw16 <= 17600:  # rango razonable: 800–1100 mb
+                baro_inhg = u32_baro_to_inhg(payload["BARO_0330_U32"])
+        if baro_inhg is not None:
+            asyncio.create_task(self.sim_data.update_environment_partial(pressure_inhg=baro_inhg))
+            # También publicar en indicators para clientes que esperan ese campo
+            asyncio.create_task(self.sim_data.update_indicators_partial(altimeter_inhg=baro_inhg))
 
-        # Debug: Log all processed groups
-        if DEBUG_FSUIPC_MESSAGES:
-            all_groups = {
-                'gps': gps_kwargs,
-                'att': att_kwargs,
-                'lights': lights_kwargs,
-                'systems': systems_kwargs,
-                'environment': environment_kwargs
+        # Luces bitmask (uint32)
+        if "LIGHTS_BITS32" in payload:
+            m = int(payload["LIGHTS_BITS32"])
+            lights_kwargs = {
+                "nav_on": bool(m & (1<<0)),
+                "landing_on": bool(m & (1<<2)),
+                "taxi_on": bool(m & (1<<3)),
+                "strobe_on": bool(m & (1<<4)),
             }
-            active_groups = {k: v for k, v in all_groups.items() if v}
-            if active_groups:
-                print(f"[DEBUG] All processed groups: {list(active_groups.keys())}")
-                for group_name, group_data in active_groups.items():
-                    print(f"[DEBUG] {group_name}: {group_data}")
+            asyncio.create_task(self.sim_data.update_lights_partial(**lights_kwargs))
 
-        # Partial updates (already exist in SimData)
+        # Sistemas
+        systems_kwargs = {}
+        if "BATTERY_MAIN" in payload:
+            systems_kwargs["battery_main_on"] = bool(payload["BATTERY_MAIN"])
+        if "PITOT_HEAT_U32" in payload:
+            systems_kwargs["pitot_heat_on"] = bool(payload["PITOT_HEAT_U32"])
+
+        # --- Derivado: brakes_on desde offsets U32 ---
+        pb = u32_to_bool_parking(payload.get("parkingBrakeU")) if "parkingBrakeU" in payload else None
+
+        bl = lower16(payload.get("brakeLeftU"))  if "brakeLeftU"  in payload else None
+        br = lower16(payload.get("brakeRightU")) if "brakeRightU" in payload else None
+
+        brakes_on = None
+
+        # Pedales (0..16383)
+        if bl is not None or br is not None:
+            L = bl or 0
+            R = br or 0
+            threshold = 200
+            brakes_on = (L > threshold) or (R > threshold)
+
+        # Parking según flag
+        if USE_BRAKES_ON_INCLUDES_PARKING:
+            if pb is not None:
+                brakes_on = bool((brakes_on or False) or pb) if brakes_on is not None else bool(pb)
+
+        # Publicar SOLO la clave soportada por el schema
+        if brakes_on is not None:
+            systems_kwargs["brakes_on"] = brakes_on
+
+        if systems_kwargs:
+            asyncio.create_task(self.sim_data.update_systems_partial(**systems_kwargs))
+
+        # Flaps/Gear en %
+        levers_kwargs = {}
+        if "flapsHandle" in payload:
+            levers_kwargs["flaps_pct"] = u32_to_pct_16383(payload["flapsHandle"])
+        if "gearHandle" in payload:
+            levers_kwargs["gear_pct"] = u32_to_pct_16383(payload["gearHandle"])
+        
+        if levers_kwargs:
+            asyncio.create_task(self.sim_data.update_levers_partial(**levers_kwargs))
+
+        # Posición/actitud (mantener el mapeo automático existente)
+        gps_kwargs = {}
+        att_kwargs = {}
+        
+        if "LatitudeDeg" in payload:
+            gps_kwargs["latitude"] = payload["LatitudeDeg"]
+        if "LongitudeDeg" in payload:
+            gps_kwargs["longitude"] = payload["LongitudeDeg"]
+        if "AltitudeM" in payload:
+            gps_kwargs["alt_msl_meters"] = payload["AltitudeM"]
+        if "GroundAltRaw" in payload:
+            gps_kwargs["ground_alt_m"] = meters256_to_m(payload["GroundAltRaw"])
+        
+        if "BankRaw" in payload:
+            att_kwargs["roll_deg"] = -raw_ang_to_deg(payload["BankRaw"])
+        if "PitchRaw" in payload:
+            att_kwargs["pitch_deg"] = raw_ang_to_deg_pitch(payload["PitchRaw"])
+        if "HeadingTrueRaw" in payload:
+            att_kwargs["heading_deg"] = raw_hdg_to_deg(payload["HeadingTrueRaw"])
+
+        # Nombre aeronave - almacenar en systems_data temporalmente
+        if "aircraftNameStr" in payload:
+            systems_kwargs["aircraft_name"] = str(payload["aircraftNameStr"])
+
         if gps_kwargs:
             asyncio.create_task(self.sim_data.update_gps_partial(**gps_kwargs))
         if att_kwargs:
             asyncio.create_task(self.sim_data.update_att_partial(**att_kwargs))
-        if lights_kwargs:
-            asyncio.create_task(self.sim_data.update_lights_partial(**lights_kwargs))
-        if systems_kwargs:
-            asyncio.create_task(self.sim_data.update_systems_partial(**systems_kwargs))
-        if environment_kwargs:
-            asyncio.create_task(self.sim_data.update_environment_partial(**environment_kwargs))
+
+        # === SISTEMA AUTOMÁTICO PARA OFFSETS NO PROCESADOS MANUALMENTE ===
+        # Procesar READ_SIGNALS que no fueron manejados manualmente arriba
+        auto_gps_kwargs = {}
+        auto_att_kwargs = {}
+        auto_lights_kwargs = {}
+        auto_systems_kwargs = {}
+        auto_environment_kwargs = {}
+
+        for key, cfg in READ_SIGNALS.items():
+            if key not in payload:
+                continue
+            
+            # Skip offsets ya procesados manualmente
+            if key in ["IASraw_U32", "VSraw", "MagVar_U32", "BARO_0332_U32", "BARO_0330_U32", 
+                      "LIGHTS_BITS32", "BATTERY_MAIN", "PITOT_HEAT_U32", "brakeLeftU", 
+                      "brakeRightU", "parkingBrakeU", "flapsHandle", "gearHandle", 
+                      "aircraftNameStr", "LatitudeDeg", "LongitudeDeg", "AltitudeM", "GroundAltRaw",
+                      "BankRaw", "PitchRaw", "HeadingTrueRaw"]:
+                continue
+                
+            val = payload[key]
+            # Aplicar transform si existe
+            tf = cfg.get("transform")
+            if tf and tf in TRANSFORMS:
+                raw_val = val
+                val = TRANSFORMS[tf](val)
+                # Debug temporal para GroundSpeedKts
+                if key == "GroundSpeedKts" and not hasattr(self, "_gs_auto_dbg"):
+                    self._gs_auto_dbg = 0
+                if key == "GroundSpeedKts" and self._gs_auto_dbg < 5:
+                    self._gs_auto_dbg += 1
+            
+            # Dispatch según sink
+            sink_group, sink_field = cfg["sink"]
+            if sink_group == "gps" and val is not None and sink_field not in auto_gps_kwargs:
+                auto_gps_kwargs[sink_field] = val
+            elif sink_group == "att" and val is not None and sink_field not in auto_att_kwargs:
+                auto_att_kwargs[sink_field] = val
+            elif sink_group == "lights" and val is not None and sink_field not in auto_lights_kwargs:
+                auto_lights_kwargs[sink_field] = val
+            elif sink_group == "systems" and val is not None and sink_field not in auto_systems_kwargs:
+                auto_systems_kwargs[sink_field] = val
+            elif sink_group == "environment" and val is not None and sink_field not in auto_environment_kwargs:
+                auto_environment_kwargs[sink_field] = val
+
+        # --- Derivado: brakes_on (de U32) ---
+        pb = None
+        if "parkingBrakeU" in payload:
+            pb = u32_to_bool_parking(payload["parkingBrakeU"])
+
+        bl = lower16(payload.get("brakeLeftU"))  if "brakeLeftU"  in payload else None
+        br = lower16(payload.get("brakeRightU")) if "brakeRightU" in payload else None
+
+        brakes_on = None
+        if bl is not None or br is not None:
+            L = bl or 0
+            R = br or 0
+            threshold = 200           # 0..16383
+            brakes_on = (L > threshold) or (R > threshold)
+
+        # OR con parking
+        if pb is not None:
+            brakes_on = bool((brakes_on or False) or pb) if brakes_on is not None else bool(pb)
+
+        # Publica SOLO lo que entiende el schema
+        # if brakes_on is not None:
+            # systems_kwargs["brakes_on"] = brakes_on REVISAR FRENADO
+
+
+        # Aplicar updates automáticos
+        if auto_gps_kwargs:
+            asyncio.create_task(self.sim_data.update_gps_partial(**auto_gps_kwargs))
+        if auto_att_kwargs:
+            asyncio.create_task(self.sim_data.update_att_partial(**auto_att_kwargs))
+        if auto_lights_kwargs:
+            asyncio.create_task(self.sim_data.update_lights_partial(**auto_lights_kwargs))
+        if auto_systems_kwargs:
+            asyncio.create_task(self.sim_data.update_systems_partial(**auto_systems_kwargs))
+        if auto_environment_kwargs:
+            asyncio.create_task(self.sim_data.update_environment_partial(**auto_environment_kwargs))
 
         self.lastDataReceivedTime = time.time()
 
