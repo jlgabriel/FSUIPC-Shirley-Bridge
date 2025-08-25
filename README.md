@@ -89,7 +89,7 @@ Follow these steps to get the bridge up and running.
 
 ### Prerequisites
 -   **Microsoft Flight Simulator 2020/2024**
--   **FSUIPC7**: The registered version is required for WebSocket server functionality.
+-   **FSUIPC7**: The registered version is not required for WebSocket server functionality.
 -   **Python 3.8+**
 -   The `websockets` Python library.
 
@@ -356,6 +356,7 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
 
