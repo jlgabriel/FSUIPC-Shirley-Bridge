@@ -4,7 +4,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Websockets](https://img.shields.io/badge/library-websockets-green.svg)](https://websockets.readthedocs.io/)
 
-**A high-performance WebSocket bridge that connects FSUIPC7 with Shirley AI to Microsoft Flight Simulator 2020/2024. This bridge enables real-time, bidirectional communication, streaming rich flight data to Shirley and translating its commands into in-sim actions.**
+**A high-performance bridge that connects Shirley AI with Microsoft Flight Simulator 2020/2024, using the FSUIPC7 WebSocket. This bridge enables real-time, bidirectional communication, streaming rich flight data to Shirley and translating its commands into in-sim actions.**
 
 This tool is the essential link for creating an immersive, voice-controlled cockpit experience, allowing Shirley to have deep, context-aware conversations about the ongoing flight, from aircraft systems to navigation and environmental conditions.
 
@@ -356,5 +356,6 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
