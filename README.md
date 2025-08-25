@@ -167,7 +167,7 @@ This is the flow of data from the simulator to Shirley:
 3.  **Lookup & Transform**: The client looks up each key (e.g., `IASraw_U32`) in the `READ_SIGNALS` dictionary. It then calls the corresponding function from the `TRANSFORMS` registry (e.g., `knots128_to_kts(15360)`), which returns a clean value (`120.0`).
 4.  **State Update**: The clean value is dispatched to the `SimData` class based on its `sink` definition (e.g., `("gps", "ias_kts")`). A call is made to `sim_data.update_gps_partial(ias_kts=120.0)`.
 5.  **Snapshot Assembly**: The `ShirleyWebSocketServer`'s broadcast loop calls `sim_data.get_snapshot()`. This method gathers all the latest values from its internal groups (`_gps_data`, `_att_data`, etc.) and assembles them into a single, clean JSON object conforming to the Shirley schema.
-6.  **Broadcast**: The final JSON snapshot is sent to all connected Shirley clients.
+6.  **Broadcast**: The final JSON snapshot is sent to Shirley connected client.
 
 ### The Command Pipeline (Write Path)
 
@@ -356,6 +356,7 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
 
