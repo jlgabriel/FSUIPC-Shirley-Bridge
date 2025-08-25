@@ -320,22 +320,6 @@ Clients can send a `SetSimData` message to control the aircraft. The command is 
 -   **Check In-Sim Systems:** Ensure the relevant aircraft systems are powered. For example, lights will not report a status if the main battery is off.
 
 <br>
-
-## 🤝 Contributing
-
-Contributions are welcome! If you would like to contribute, please follow these steps:
-
-1.  Fork the repository.
-2.  Create a new branch (`git checkout -b feature/AmazingFeature`).
-3.  Make your changes.
-4.  Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-5.  Push to the branch (`git push origin feature/AmazingFeature`).
-6.  Open a Pull Request.
-
-Please ensure your code follows a similar style and that you document any new functionality. Adding or improving FSUIPC offsets and transformations is a great way to contribute.
-
-<br>
-
 ## 🙏 Acknowledgments
 
 -   **Juan Luis Gabriel** - *Author*
@@ -356,6 +340,7 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
 
