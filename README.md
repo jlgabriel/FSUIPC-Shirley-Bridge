@@ -319,6 +319,7 @@ Clients can send a `SetSimData` message to control the aircraft. The command is 
 -   **Check In-Sim Systems:** Ensure the relevant aircraft systems are powered. For example, lights will not report a status if the main battery is off.
 
 <br>
+
 ## 🙏 Acknowledgments
 
 -   **Juan Luis Gabriel** - *Author*
@@ -339,6 +340,7 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
 
