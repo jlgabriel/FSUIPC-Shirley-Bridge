@@ -135,8 +135,7 @@ DEBUG_FSUIPC_MESSAGES = False                 # Set to True for verbose console 
     ```bash
     python fsuipc_shirley_bridge.py
     ```
-4.  Connect your Shirley AI client or any other compatible WebSocket client to the bridge's endpoint: `ws://localhost:2992/api/v1`.
-
+    
 Upon successful execution, you will see the following output in your terminal, confirming that both connections are active:
 ```
 [FSUIPCWS] Connected ws://localhost:2048/fsuipc/ (subprotocol=fsuipc)
@@ -357,4 +356,5 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
