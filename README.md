@@ -89,7 +89,7 @@ Follow these steps to get the bridge up and running.
 
 ### Prerequisites
 -   **Microsoft Flight Simulator 2020/2024**
--   **FSUIPC7**: The registered version is not required for WebSocket server functionality.
+-   **FSUIPC7**: The registered version is not required for WebSocket Server functionality.
 -   **Python 3.8+**
 -   The `websockets` Python library.
 
@@ -155,7 +155,7 @@ This section details the internal mechanics of the bridge.
 The application is built around three main classes:
 
 -   `FSUIPCWSClient`: Manages the connection to the FSUIPC WebSocket Server. It is responsible for declaring offsets, receiving raw simulator data, and sending write commands to the simulator.
--   `ShirleyWebSocketServer`: Manages connections from Shirley AI clients. It broadcasts the simulator state and listens for incoming commands.
+-   `ShirleyWebSocketServer`: Manages connections from Shirley AI client. It broadcasts the simulator state and listens for incoming commands.
 -   `SimData`: The central state manager. This class holds the latest processed data from the simulator in a structured format. It uses `asyncio.Lock` to ensure that data updates from FSUIPC and data reads for broadcasting are thread-safe, preventing race conditions.
 
 ### The Data Pipeline (Read Path)
@@ -356,6 +356,7 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
 
