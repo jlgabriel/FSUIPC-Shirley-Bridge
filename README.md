@@ -130,7 +130,7 @@ DEBUG_FSUIPC_MESSAGES = False                 # Set to True for verbose console 
 ## 🛫 Running the Bridge
 
 1.  Start **Microsoft Flight Simulator** and load into a flight.
-2.  Ensure **FSUIPC7** is running (it should start automatically with the sim).
+2.  Ensure **FSUIPC7** is running (it should start automatically with the sim), and enable the **WebSocket Server**
 3.  Execute the bridge script from your terminal:
     ```bash
     python fsuipc_shirley_bridge.py
@@ -356,6 +356,7 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
 
