@@ -29,7 +29,6 @@ This tool is the essential link for creating an immersive, voice-controlled cock
   - [The Transformation Layer](#the-transformation-layer)
 - [Shirley WebSocket API](#shirley-websocket-api)
 - [Troubleshooting](#-troubleshooting)
-- [Contributing](#-contributing)
 - [Acknowledgments](#-acknowledgments)
 - [License](#-license)
 
@@ -340,6 +339,7 @@ Copyright (c) 2025 Juan Luis Gabriel
 ---
 
 ***Ready to fly with an AI copilot? 🛩️✨***
+
 
 
 
