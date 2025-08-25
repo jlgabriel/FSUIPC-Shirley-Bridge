@@ -276,6 +276,53 @@ READ_SIGNALS = {
 
     # --- Nombre aeronave ---
     "aircraftNameStr": {"address": 0x3D00, "type": "string", "size": 256, "sink": ("aircraft", "name")},
+
+    # === RADIOS/NAVIGATION (CORREGIDOS) ===
+    "COM1_FREQ":      {"address": 0x034E, "type": "uint", "size": 2, "transform": "bcd_to_freq_com_official", "sink": ("radios", "com1_active_khz")},
+    "COM1_STANDBY":   {"address": 0x311A, "type": "uint", "size": 2, "transform": "bcd_to_freq_com_official", "sink": ("radios", "com1_standby_khz")},
+    "COM2_FREQ":      {"address": 0x3118, "type": "uint", "size": 2, "transform": "bcd_to_freq_com_official", "sink": ("radios", "com2_active_khz")},
+    "COM2_STANDBY":   {"address": 0x311C, "type": "uint", "size": 2, "transform": "bcd_to_freq_com_official", "sink": ("radios", "com2_standby_khz")},
+    "NAV1_FREQ":      {"address": 0x0350, "type": "uint", "size": 2, "transform": "bcd_to_freq_nav_official", "sink": ("radios", "nav1_active_khz")},
+    "NAV1_STANDBY":   {"address": 0x311E, "type": "uint", "size": 2, "transform": "bcd_to_freq_nav_official", "sink": ("radios", "nav1_standby_khz")},
+    "TRANSPONDER":    {"address": 0x0354, "type": "uint", "size": 2, "transform": "bcd_to_xpdr_official", "sink": ("radios", "transponder_code")},
+
+    # === INDICATORS (NUEVOS) ===
+    "ENGINE1_RPM":    {"address": 0x0898, "type": "uint", "size": 4, "transform": "rpm_raw_to_rpm", "sink": ("indicators", "engine1_rpm")},
+    "ENGINE2_RPM":    {"address": 0x0930, "type": "uint", "size": 4, "transform": "rpm_raw_to_rpm", "sink": ("indicators", "engine2_rpm")},
+    "PROP1_RPM":      {"address": 0x089C, "type": "uint", "size": 4, "transform": "rpm_raw_to_rpm", "sink": ("indicators", "prop1_rpm")},
+    "PROP2_RPM":      {"address": 0x0934, "type": "uint", "size": 4, "transform": "rpm_raw_to_rpm", "sink": ("indicators", "prop2_rpm")},
+    "MANIFOLD_PRESSURE": {"address": 0x08A0, "type": "uint", "size": 4, "transform": "manifold_to_inhg", "sink": ("indicators", "manifold_pressure")},
+    "ENGINE1_N1":     {"address": 0x2010, "type": "float", "size": 8, "transform": None, "sink": ("indicators", "engine1_n1_pct")},
+    "ENGINE1_EGT":    {"address": 0x08B8, "type": "uint", "size": 2, "transform": "egt_to_celsius", "sink": ("indicators", "engine1_egt_c")},
+    "ENGINE1_CHT":    {"address": 0x08BA, "type": "uint", "size": 2, "transform": "temp_to_celsius", "sink": ("indicators", "engine1_cht_c")},
+    # === ESTOS CAMPOS NO EXISTEN EN SCHEMA - REMOVER ===
+    # "FUEL_QTY_LEFT":  {"address": 0x0B74, "type": "uint", "size": 4, "transform": "fuel_to_gallons", "sink": ("systems", "fuel_left_gal")},
+    # "FUEL_QTY_RIGHT": {"address": 0x0B7C, "type": "uint", "size": 4, "transform": "fuel_to_gallons", "sink": ("systems", "fuel_right_gal")},
+    # "OIL_TEMP":       {"address": 0x08B0, "type": "uint", "size": 2, "transform": "temp_to_celsius", "sink": ("systems", "oil_temp_c")},
+    # "OIL_PRESSURE":   {"address": 0x08B4, "type": "uint", "size": 2, "transform": "oil_pressure_to_psi", "sink": ("systems", "oil_pressure_psi")},
+
+    # === LEVERS ADICIONALES ===
+    "THROTTLE1_POS":  {"address": 0x088C, "type": "int", "size": 2, "transform": "throttle_to_percent", "sink": ("levers", "throttle1_pct")},
+    "THROTTLE2_POS":  {"address": 0x0924, "type": "int", "size": 2, "transform": "throttle_to_percent", "sink": ("levers", "throttle2_pct")},
+    "MIXTURE1_POS":   {"address": 0x08A4, "type": "int", "size": 2, "transform": "mixture_to_percent", "sink": ("levers", "mixture1_pct")},
+    "MIXTURE2_POS":   {"address": 0x093C, "type": "int", "size": 2, "transform": "mixture_to_percent", "sink": ("levers", "mixture2_pct")},
+    "PROP1_POS":      {"address": 0x08A8, "type": "int", "size": 2, "transform": "prop_to_percent", "sink": ("levers", "prop1_pct")},
+    "PROP2_POS":      {"address": 0x0940, "type": "int", "size": 2, "transform": "prop_to_percent", "sink": ("levers", "prop2_pct")},
+    "SPEEDBRAKE_POS": {"address": 0x0BD0, "type": "uint", "size": 4, "transform": "u32_to_pct_16383", "sink": ("levers", "speedbrake_pct")},
+
+    # === AUTOPILOT ===
+    "AP_MASTER":      {"address": 0x07BC, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("autopilot", "master_on")},
+    "AP_HDG_HOLD":    {"address": 0x07C8, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("autopilot", "hdg_select_on")},
+    "AP_ALT_HOLD":    {"address": 0x07D0, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("autopilot", "alt_hold_on")},
+    "AP_HDG_BUG":     {"address": 0x07CC, "type": "uint", "size": 2, "transform": "heading_bug_to_deg", "sink": ("autopilot", "hdg_bug_deg")},
+    "AP_ALT_BUG":     {"address": 0x07D4, "type": "uint", "size": 4, "transform": "alt_bug_to_feet", "sink": ("autopilot", "alt_bug_ft")},
+    "AP_VS_HOLD":     {"address": 0x07EC, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("autopilot", "vs_hold_on")},
+    "AP_VS_TARGET":   {"address": 0x07F2, "type": "int", "size": 2, "transform": "vs_target_to_fpm", "sink": ("autopilot", "vs_target_fpm")},
+
+    # === ENVIRONMENT ADICIONAL ===
+    "WIND_SPEED":     {"address": 0x0E90, "type": "uint", "size": 2, "transform": "wind_to_kts", "sink": ("environment", "wind_speed_kts")},
+    "WIND_DIR":       {"address": 0x0E92, "type": "uint", "size": 2, "transform": "wind_dir_to_deg", "sink": ("environment", "wind_dir_deg")},
+    "OUTSIDE_TEMP":   {"address": 0x0E8C, "type": "int", "size": 2, "transform": "temp_to_celsius", "sink": ("environment", "outside_temp_c")},
 }
 
 # Normaliza: si alguna señal no define 'sink', déjalo en None
@@ -455,6 +502,445 @@ def gs_u32_to_kts(raw):
             print(f"[TRANSFORM] gs_u32_to_kts failed for {raw}: {e}")
         return None
 
+# ===================== NUEVAS TRANSFORMACIONES PARA SCHEMA =====================
+
+def bcd_to_freq_com(raw):
+    """Convert BCD COM frequency correctly"""
+    try:
+        val = int(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[COM_DEBUG] Raw COM frequency: {val} (hex: 0x{val:08X})")
+
+        # FSUIPC COM frequencies are stored as packed BCD
+        # Format: 0x0001XXYY where XX.YY is the frequency
+        # Example: 127.850 MHz stored as 0x00012785
+
+        # Extract the frequency part (lower 16 bits typically)
+        freq_bcd = val & 0xFFFF
+
+        # Convert BCD to frequency
+        # Each nibble represents a decimal digit
+        mhz_hundreds = (freq_bcd >> 12) & 0xF  # 1 (from 127.85)
+        mhz_tens = (freq_bcd >> 8) & 0xF       # 2 (from 127.85)
+        mhz_units = (freq_bcd >> 4) & 0xF      # 7 (from 127.85)
+        khz_hundreds = freq_bcd & 0xF          # 8 (from 127.85, .850)
+
+        # Additional digits may be in upper bits
+        if val > 0xFFFF:
+            khz_tens = (val >> 20) & 0xF
+            khz_units = (val >> 16) & 0xF
+        else:
+            khz_tens = 5  # Default assumption
+            khz_units = 0
+
+        # Construct frequency in kHz
+        frequency_khz = (mhz_hundreds * 100 + mhz_tens * 10 + mhz_units) * 1000 + \
+                        khz_hundreds * 100 + khz_tens * 10 + khz_units
+
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[COM_DEBUG] BCD conversion: {mhz_hundreds}{mhz_tens}{mhz_units}.{khz_hundreds}{khz_tens}{khz_units} = {frequency_khz} kHz")
+
+        # Validate COM range (118.000 - 136.975 MHz)
+        if frequency_khz < 118000 or frequency_khz > 136975:
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[COM_DEBUG] Frequency {frequency_khz} out of range, using default 122750")
+            return 122750
+
+        return frequency_khz
+
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bcd_to_freq_com failed for {raw}: {e}")
+        return 122750  # Default frequency
+
+def bcd_to_freq_com_official(raw):
+    """Convert COM frequency according to FSUIPC official documentation"""
+    try:
+        val = int(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[COM_OFFICIAL] Raw COM value: {val} (hex: 0x{val:04X})")
+
+        # According to FSUIPC doc: 4 digits in BCD, leading 1 assumed
+        # Example: 123.45 MHz -> 0x2345 (2345 decimal)
+        # Format: 0xXXYY -> 1XX.YY MHz
+
+        # Extract BCD digits
+        tens_mhz = (val >> 12) & 0xF      # First BCD digit (tens of MHz after 1)
+        units_mhz = (val >> 8) & 0xF      # Second BCD digit (units of MHz)
+        tens_khz = (val >> 4) & 0xF       # Third BCD digit (tenths of MHz)
+        units_khz = val & 0xF             # Fourth BCD digit (hundredths of MHz)
+
+        # Construct frequency: 1XX.YY MHz
+        # Leading 1 is assumed, so we get 1 + tens_mhz + units_mhz . tens_khz + units_khz
+        frequency_mhz = 100 + (tens_mhz * 10) + units_mhz + (tens_khz * 0.1) + (units_khz * 0.01)
+        frequency_khz = int(frequency_mhz * 1000)
+
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[COM_OFFICIAL] BCD digits: {tens_mhz}{units_mhz}.{tens_khz}{units_khz}")
+            print(f"[COM_OFFICIAL] Frequency: 1{tens_mhz}{units_mhz}.{tens_khz}{units_khz} MHz = {frequency_khz} kHz")
+
+        # Validate range (118000-136975 kHz)
+        if frequency_khz < 118000 or frequency_khz > 136975:
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[COM_OFFICIAL] Frequency {frequency_khz} out of COM range, using default")
+            return 122750
+
+        return frequency_khz
+
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[COM_OFFICIAL] Transform failed for {raw}: {e}")
+        return 122750
+
+def bcd_to_freq_nav_official(raw):
+    """Convert NAV frequency according to FSUIPC official documentation"""
+    try:
+        val = int(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[NAV_OFFICIAL] Raw NAV value: {val} (hex: 0x{val:04X})")
+
+        # According to FSUIPC doc: 4 digits in BCD, leading 1 assumed
+        # Example: 113.45 MHz -> 0x1345
+        # Format: 0xXXYY -> 1XX.YY MHz (same as COM)
+
+        tens_mhz = (val >> 12) & 0xF
+        units_mhz = (val >> 8) & 0xF
+        tens_khz = (val >> 4) & 0xF
+        units_khz = val & 0xF
+
+        # Construct frequency: 1XX.YY MHz
+        frequency_mhz = 100 + (tens_mhz * 10) + units_mhz + (tens_khz * 0.1) + (units_khz * 0.01)
+        frequency_khz = int(frequency_mhz * 1000)
+
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[NAV_OFFICIAL] BCD digits: {tens_mhz}{units_mhz}.{tens_khz}{units_khz}")
+            print(f"[NAV_OFFICIAL] Frequency: 1{tens_mhz}{units_mhz}.{tens_khz}{units_khz} MHz = {frequency_khz} kHz")
+
+        # Validate NAV range (108000-117950 kHz)
+        if frequency_khz < 108000 or frequency_khz > 117950:
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[NAV_OFFICIAL] Frequency {frequency_khz} out of NAV range, using default")
+            return 110000
+
+        return frequency_khz
+
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[NAV_OFFICIAL] Transform failed for {raw}: {e}")
+        return 110000
+
+def bcd_to_xpdr_official(raw):
+    """Convert transponder according to FSUIPC official documentation"""
+    try:
+        val = int(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[XPDR_OFFICIAL] Raw transponder value: {val} (hex: 0x{val:04X})")
+
+        # According to FSUIPC doc: 4 digits in BCD format
+        # Example: 0x1200 means 1200 on the dials
+        # This is straightforward BCD to decimal conversion
+
+        thousands = (val >> 12) & 0xF
+        hundreds = (val >> 8) & 0xF
+        tens = (val >> 4) & 0xF
+        units = val & 0xF
+
+        result = thousands * 1000 + hundreds * 100 + tens * 10 + units
+
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[XPDR_OFFICIAL] BCD digits: {thousands}{hundreds}{tens}{units} = {result}")
+
+        # Validate transponder range (0000-7777)
+        if result > 7777:
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[XPDR_OFFICIAL] Invalid transponder {result}, using 1200")
+            return 1200
+
+        return result
+
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[XPDR_OFFICIAL] Transform failed for {raw}: {e}")
+        return 1200
+
+def bcd_to_freq_nav(raw):
+    """Convert BCD NAV frequency correctly"""
+    try:
+        val = int(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[NAV_DEBUG] Raw NAV frequency: {val} (hex: 0x{val:08X})")
+
+        # Similar to COM but different valid range
+        # ... (same BCD parsing logic as COM)
+
+        # For now, use simple approach
+        if 108000 <= val <= 117950:
+            return val
+        elif 108 <= val <= 118:
+            return val * 1000
+        else:
+            return 110000  # Default NAV frequency
+
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bcd_to_freq_nav failed for {raw}: {e}")
+        return 110000
+
+def bcd_to_freq_com_simple(raw):
+    """Simplified COM frequency conversion with debugging"""
+    try:
+        val = int(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[COM_SIMPLE] Raw value: {val}")
+
+        # Si el valor parece razonable, usarlo directamente
+        if 118000 <= val <= 136975:
+            return val
+
+        # Si está en MHz*1000 format
+        if 118 <= val <= 137:
+            return val * 1000
+
+        # Si es un valor BCD simple, convertir dígito por dígito
+        if val > 0:
+            # Extract as string and reinterpret
+            str_val = f"{val:08d}"
+            try:
+                # Try to extract meaningful frequency parts
+                if len(str_val) >= 4:
+                    mhz = int(str_val[:3])  # First 3 digits as MHz
+                    khz = int(str_val[3:6]) if len(str_val) >= 6 else 0  # Next 3 as kHz
+                    frequency = mhz * 1000 + khz
+
+                    if 118000 <= frequency <= 136975:
+                        if DEBUG_FSUIPC_MESSAGES:
+                            print(f"[COM_SIMPLE] Parsed {str_val} as {frequency} kHz")
+                        return frequency
+            except:
+                pass
+
+        # Fallback
+        return 122750
+
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[COM_SIMPLE] Failed for {raw}: {e}")
+        return 122750
+
+def bcd_to_xpdr(raw):
+    """Convert BCD transponder code correctly"""
+    try:
+        val = int(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[XPDR_DEBUG] Raw transponder value: {val} (hex: 0x{val:04X})")
+
+        # FSUIPC transponder is stored as BCD in a 16-bit word
+        # Each digit occupies 4 bits (nibble)
+        digit1 = (val >> 12) & 0xF  # Thousands
+        digit2 = (val >> 8) & 0xF   # Hundreds
+        digit3 = (val >> 4) & 0xF   # Tens
+        digit4 = val & 0xF          # Units
+
+        # Convert BCD digits to decimal
+        result = digit1 * 1000 + digit2 * 100 + digit3 * 10 + digit4
+
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[XPDR_DEBUG] BCD digits: {digit1}{digit2}{digit3}{digit4} = {result}")
+
+        # Validate range (0000-7777 for transponder)
+        if result > 7777:
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[XPDR_DEBUG] Invalid transponder code {result}, using 1200")
+            return 1200
+
+        return result
+
+    except (TypeError, ValueError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] bcd_to_xpdr failed for {raw}: {e}")
+        return 1200  # Default squawk code
+
+def rpm_raw_to_rpm(raw):
+    """Convert raw RPM to actual RPM"""
+    try:
+        return float(raw)  # Direct conversion for most aircraft
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] rpm_raw_to_rpm failed for {raw}: {e}")
+        return None
+
+def manifold_to_inhg(raw):
+    """Convert manifold pressure to inches of mercury"""
+    try:
+        return float(raw) / 1024.0  # Typical FSUIPC scaling
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] manifold_to_inhg failed for {raw}: {e}")
+        return None
+
+def egt_to_celsius(raw):
+    """Convert EGT to Celsius"""
+    try:
+        return (float(raw) * 850.0 / 16384.0) - 273.15  # Convert from Rankine
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] egt_to_celsius failed for {raw}: {e}")
+        return None
+
+def temp_to_celsius(raw):
+    """Convert temperature to Celsius (corregida para valores reales)"""
+    try:
+        val = float(raw)
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TEMP_DEBUG] Raw temp value: {val}")
+
+        # Si el valor es muy negativo, podría ser Kelvin*256 mal interpretado
+        if val < -200:
+            # Probablemente el valor necesita interpretación diferente
+            # Try direct conversion assuming it's already in reasonable range
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[TEMP_DEBUG] Temperature out of range, using default")
+            return 15.0  # Temperature default for debugging
+
+        # Conversión normal: raw/256 - 273.15 (from Kelvin*256)
+        celsius = (val / 256.0) - 273.15
+
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TEMP_DEBUG] Converted temp: {celsius}°C")
+
+        # Sanity check: Si está fuera de rango razonable (-50°C a +50°C)
+        if celsius < -50 or celsius > 50:
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[TEMP_DEBUG] Temperature out of range, using default")
+            return 15.0  # Temperatura ambiente default
+
+        return celsius
+
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TEMP_ERROR] Temperature conversion failed: {raw} -> {e}")
+        return 15.0  # Temperatura ambiente default
+
+def temp_to_celsius_alt(raw):
+    """Alternative temperature conversion"""
+    try:
+        val = float(raw)
+        # Different FSUIPC scaling - try direct Fahrenheit to Celsius
+        fahrenheit = val / 256.0
+        celsius = (fahrenheit - 32) * 5.0 / 9.0
+
+        # Sanity check
+        if celsius < -50 or celsius > 50:
+            return 15.0
+
+        return celsius
+    except:
+        return 15.0
+
+def fuel_to_gallons(raw):
+    """Convert fuel quantity to gallons"""
+    try:
+        return float(raw) * 128.0 / (65536.0 * 256.0)
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] fuel_to_gallons failed for {raw}: {e}")
+        return None
+
+def oil_pressure_to_psi(raw):
+    """Convert oil pressure to PSI"""
+    try:
+        return float(raw) / 16384.0 * 55.0  # Typical max 55 PSI
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] oil_pressure_to_psi failed for {raw}: {e}")
+        return None
+
+def throttle_to_percent(raw):
+    """Convert throttle position to percentage"""
+    try:
+        val = int(raw)
+        if val < 0: val += 65536  # Handle signed
+        return (val / 16384.0) * 100.0
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] throttle_to_percent failed for {raw}: {e}")
+        return None
+
+def mixture_to_percent(raw):
+    """Convert mixture position to percentage"""
+    try:
+        val = int(raw)
+        if val < 0: val += 65536
+        return (val / 16384.0) * 100.0
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] mixture_to_percent failed for {raw}: {e}")
+        return None
+
+def prop_to_percent(raw):
+    """Convert prop position to percentage"""
+    try:
+        val = int(raw)
+        if val < 0: val += 65536
+        return (val / 16384.0) * 100.0
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] prop_to_percent failed for {raw}: {e}")
+        return None
+
+def heading_bug_to_deg(raw):
+    """Convert heading bug to degrees (always return number)"""
+    try:
+        val = float(raw)
+        result = (val * 360.0) / 65536.0 if val != 0 else 0.0
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] heading_bug_to_deg: {raw} → {result}")
+        return result
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] heading_bug_to_deg failed for {raw}: {e}")
+        return 0.0  # Always return a number
+
+def alt_bug_to_feet(raw):
+    """Convert altitude bug to feet (always return number)"""
+    try:
+        val = float(raw)
+        result = val if val != 0 else 0.0
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] alt_bug_to_feet: {raw} → {result}")
+        return result
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] alt_bug_to_feet failed for {raw}: {e}")
+        return 0.0  # Always return a number
+
+def vs_target_to_fpm(raw):
+    """Convert VS target to feet per minute"""
+    try:
+        return float(raw)
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] vs_target_to_fpm failed for {raw}: {e}")
+        return None
+
+def wind_to_kts(raw):
+    """Convert wind speed to knots"""
+    try:
+        return float(raw)
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] wind_to_kts failed for {raw}: {e}")
+        return None
+
+def wind_dir_to_deg(raw):
+    """Convert wind direction to degrees"""
+    try:
+        return (float(raw) * 360.0) / 65536.0
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        if DEBUG_FSUIPC_MESSAGES:
+            print(f"[TRANSFORM] wind_dir_to_deg failed for {raw}: {e}")
+        return None
+
 TRANSFORMS.update({
     "knots128_to_kts": knots128_to_kts,
     "vs_raw_to_fpm":   vs_raw_to_fpm,
@@ -476,7 +962,32 @@ TRANSFORMS.update({
     "u32_to_pct_16383": u32_to_pct_16383,
     "u32_to_bool_parking": u32_to_bool_parking,
     "u32_signed16_to_magdeg": u32_signed16_to_magdeg,
-    "gs_u32_to_kts": gs_u32_to_kts
+    "gs_u32_to_kts": gs_u32_to_kts,
+
+    # New transforms for schema variables
+    "bcd_to_freq_com": bcd_to_freq_com,
+    "bcd_to_freq_nav": bcd_to_freq_nav,
+    "bcd_to_xpdr": bcd_to_xpdr,
+    "rpm_raw_to_rpm": rpm_raw_to_rpm,
+    "manifold_to_inhg": manifold_to_inhg,
+    "egt_to_celsius": egt_to_celsius,
+    "temp_to_celsius": temp_to_celsius,
+    "temp_to_celsius_alt": temp_to_celsius_alt,  # Alternative temperature conversion
+    "fuel_to_gallons": fuel_to_gallons,
+    "oil_pressure_to_psi": oil_pressure_to_psi,
+    "throttle_to_percent": throttle_to_percent,
+    "mixture_to_percent": mixture_to_percent,
+    "prop_to_percent": prop_to_percent,
+    "heading_bug_to_deg": heading_bug_to_deg,
+    "alt_bug_to_feet": alt_bug_to_feet,
+    "vs_target_to_fpm": vs_target_to_fpm,
+    "wind_to_kts": wind_to_kts,
+    "wind_dir_to_deg": wind_dir_to_deg,
+
+    # Official FSUIPC documentation transforms
+    "bcd_to_freq_com_official": bcd_to_freq_com_official,
+    "bcd_to_freq_nav_official": bcd_to_freq_nav_official,
+    "bcd_to_xpdr_official": bcd_to_xpdr_official,
 })
 
 # ===================== SINK TO SHIRLEY MAPPINGS =====================
@@ -513,6 +1024,7 @@ _SYSTEMS_SINK_TO_SHIRLEY = {
     "pitot_heat_on": "systems.pitotHeatSwitchOn",
     # "brakes_on": "systems.brakesOn",
     "battery_main_on": "systems.batteryOn.main",
+    # REMOVIDAS: fuel_left_gal, fuel_right_gal, oil_temp_c, oil_pressure_psi (NO EXISTEN EN SCHEMA)
 }
 
 _AUTOPILOT_SINK_TO_SHIRLEY = {
@@ -536,6 +1048,55 @@ _INDICATORS_SINK_TO_SHIRLEY = {
 
 _ENVIRONMENT_SINK_TO_SHIRLEY = {
     "pressure_inhg": "environment.seaLevelPressureInchesMercury",
+}
+
+# ===================== NUEVOS SINK MAPPINGS =====================
+
+_RADIOS_SINK_TO_SHIRLEY = {
+    "com1_active_khz": "radiosNavigation.frequencyHz.com1",
+    "com1_standby_khz": "radiosNavigation.standbyFrequencyHz.com1",
+    "com2_active_khz": "radiosNavigation.frequencyHz.com2",
+    "com2_standby_khz": "radiosNavigation.standbyFrequencyHz.com2",
+    "nav1_active_khz": "radiosNavigation.frequencyHz.nav1",
+    "nav1_standby_khz": "radiosNavigation.standbyFrequencyHz.nav1",
+    "transponder_code": "radiosNavigation.transponderCode",
+}
+
+_INDICATORS_ADDITIONAL_SINK_TO_SHIRLEY = {
+    "engine1_rpm": "indicators.engineRpm.engine1",
+    "engine2_rpm": "indicators.engineRpm.engine2",
+    "prop1_rpm": "indicators.propellerRpm.prop1",
+    "prop2_rpm": "indicators.propellerRpm.prop2",
+    "manifold_pressure": "indicators.manifoldPressureInchesMercury.engine1",
+    "engine1_n1_pct": "indicators.engineN1Percent.engine1",
+    "engine1_egt_c": "indicators.exhaustGasDegC.engine1",
+    "engine1_cht_c": "indicators.turbineGasTemperatureDegC.engine1",  # CHT -> TGT que sí existe
+    # REMOVIDAS: fuel_left_gal, fuel_right_gal, oil_temp_c, oil_pressure_psi (no existen en schema)
+}
+
+_LEVERS_ADDITIONAL_SINK_TO_SHIRLEY = {
+    "throttle1_pct": "levers.throttlePercentOpen.engine1",
+    "throttle2_pct": "levers.throttlePercentOpen.engine2",
+    "mixture1_pct": "levers.mixtureLeverPercentRich.engine1",
+    "mixture2_pct": "levers.mixtureLeverPercentRich.engine2",
+    "prop1_pct": "levers.propellerLeverPercentCoarse.prop1",
+    "prop2_pct": "levers.propellerLeverPercentCoarse.prop2",
+    "speedbrake_pct": "levers.speedBrakesHandlePercentDeployed",
+}
+
+_AUTOPILOT_SINK_TO_SHIRLEY = {
+    "master_on": "autopilot.isAutopilotEngaged",
+    "hdg_select_on": "autopilot.isHeadingSelectEnabled",
+    "hdg_bug_deg": "autopilot.magneticHeadingBugDeg",
+    "alt_bug_ft": "autopilot.altitudeBugFt",
+    # REMOVIDO: "vs_target_fpm": "autopilot.targetVerticalSpeedFpm",  # NO EXISTE EN SCHEMA
+    # REMOVIDAS: alt_hold_on, vs_hold_on (no se mapean directamente)
+}
+
+_ENVIRONMENT_ADDITIONAL_SINK_TO_SHIRLEY = {
+    "wind_speed_kts": "environment.aircraftWindSpeedKts",
+    "wind_dir_deg": "environment.aircraftWindHeadingDeg",
+    "outside_temp_c": "environment.groundTemperatureDegC",
 }
 
 _SIMULATION_SINK_TO_SHIRLEY = {
@@ -603,6 +1164,11 @@ class SimData:
         self._vs_fpm_raw = None
         self._ground_alt_m = None
         self._mag_var_deg = None
+
+        # Nuevos grupos de datos
+        self._radios_data = {}       # COM/NAV frequencies, transponder
+        self._indicators_data = {}   # RPMs, temperatures, pressures, fuel
+        self._autopilot_data = {}    # AP status, bugs, targets
 
         # Ground track calculation (bearing between consecutive positions)
         self._last_lat = None
@@ -707,6 +1273,20 @@ class SimData:
             for key, value in kwargs.items():
                 if value is not None:
                     self._systems_data[key] = value
+            self.last_timestamp = iso_utc_ms()
+
+    async def update_radios_partial(self, **kwargs):
+        async with self._lock:
+            for key, value in kwargs.items():
+                if value is not None:
+                    self._radios_data[key] = value
+            self.last_timestamp = iso_utc_ms()
+
+    async def update_indicators_partial(self, **kwargs):
+        async with self._lock:
+            for key, value in kwargs.items():
+                if value is not None:
+                    self._indicators_data[key] = value
             self.last_timestamp = iso_utc_ms()
 
     async def update_autopilot_partial(self, **kwargs):
@@ -829,10 +1409,19 @@ class SimData:
                     parts = shirley_key.split('.')
                     if len(parts) == 2 and parts[0] == "autopilot":
                         value = self._autopilot_data[sink_key]
-                        if "deg" in parts[1] or "ft" in parts[1] or "fpm" in parts[1]:
+                        # Forzar tipos específicos para campos problemáticos
+                        if sink_key in ["hdg_bug_deg", "alt_bug_ft"]:
+                            autopilot[parts[1]] = float(value)  # Explicitly float
+                            if DEBUG_FSUIPC_MESSAGES:
+                                print(f"[AUTOPILOT_SNAPSHOT] {sink_key}: {value} → {float(value)}")
+                        elif "deg" in parts[1] or "ft" in parts[1] or "fpm" in parts[1]:
                             autopilot[parts[1]] = float(value)
                         else:
                             autopilot[parts[1]] = bool(value)
+
+            # Debug: Mostrar grupo autopilot completo si hay datos
+            if DEBUG_FSUIPC_MESSAGES and autopilot:
+                print(f"[DEBUG] Autopilot group being sent: {autopilot}")
 
             # Build levers group
             for sink_key, shirley_key in _LEVERS_SINK_TO_SHIRLEY.items():
@@ -871,6 +1460,70 @@ class SimData:
                     if len(parts) == 2 and parts[0] == "simulation":
                         simulation[parts[1]] = str(self._systems_data[sink_key])
 
+            # Build nuevos grupos
+            radios = {}
+            indicators_additional = {}
+            levers_additional = {}
+            autopilot_additional = {}
+            environment_additional = {}
+
+            # Build radios group
+            for sink_key, shirley_key in _RADIOS_SINK_TO_SHIRLEY.items():
+                if sink_key in self._radios_data:
+                    parts = shirley_key.split('.')
+                    if len(parts) == 3:  # frequencyHz.com1
+                        if parts[1] not in radios:
+                            radios[parts[1]] = {}
+                        radios[parts[1]][parts[2]] = self._radios_data[sink_key]
+                    elif len(parts) == 2:  # transponderCode
+                        radios[parts[1]] = self._radios_data[sink_key]
+
+            # Build indicators additional group
+            for sink_key, shirley_key in _INDICATORS_ADDITIONAL_SINK_TO_SHIRLEY.items():
+                if sink_key in self._indicators_data:
+                    parts = shirley_key.split('.')
+                    if len(parts) == 3:  # engineRpm.engine1
+                        if parts[1] not in indicators_additional:
+                            indicators_additional[parts[1]] = {}
+                        indicators_additional[parts[1]][parts[2]] = self._indicators_data[sink_key]
+
+            # Build levers additional group
+            for sink_key, shirley_key in _LEVERS_ADDITIONAL_SINK_TO_SHIRLEY.items():
+                if sink_key in self._levers_data:
+                    parts = shirley_key.split('.')
+                    if len(parts) == 3:  # throttlePercentOpen.engine1
+                        if parts[1] not in levers_additional:
+                            levers_additional[parts[1]] = {}
+                        levers_additional[parts[1]][parts[2]] = self._levers_data[sink_key]
+                    elif len(parts) == 2:
+                        levers_additional[parts[1]] = self._levers_data[sink_key]
+
+            # Build autopilot additional group
+            for sink_key, shirley_key in _AUTOPILOT_SINK_TO_SHIRLEY.items():
+                if sink_key in self._autopilot_data:
+                    parts = shirley_key.split('.')
+                    if len(parts) == 2:
+                        value = self._autopilot_data[sink_key]
+                        if "deg" in parts[1] or "ft" in parts[1] or "fpm" in parts[1]:
+                            autopilot[parts[1]] = float(value)
+                        else:
+                            autopilot[parts[1]] = bool(value)
+
+            # Handle altitudeMode separately (enum logic)
+            if "alt_hold_on" in self._autopilot_data and self._autopilot_data["alt_hold_on"]:
+                autopilot["altitudeMode"] = "altitudeHold"
+            elif "vs_hold_on" in self._autopilot_data and self._autopilot_data["vs_hold_on"]:
+                autopilot["altitudeMode"] = "verticalSpeed"
+            else:
+                autopilot["altitudeMode"] = "disabled"
+
+            # Build environment additional group
+            for sink_key, shirley_key in _ENVIRONMENT_ADDITIONAL_SINK_TO_SHIRLEY.items():
+                if sink_key in self._environment_data:
+                    parts = shirley_key.split('.')
+                    if len(parts) == 2:
+                        environment_additional[parts[1]] = self._environment_data[sink_key]
+
             # CRITICAL: Ensure pos and att are added to output
             if pos:
                 out["position"] = pos
@@ -888,6 +1541,17 @@ class SimData:
                 if DEBUG_FSUIPC_MESSAGES:
                     print(f"[DEBUG] WARNING: att dict is empty!")
 
+            # ALTERNATIVA FINAL: Forzar tipos correctos para campos problemáticos
+            if autopilot:
+                # Force correct types for problematic fields
+                if "magneticHeadingBugDeg" in autopilot:
+                    autopilot["magneticHeadingBugDeg"] = float(autopilot["magneticHeadingBugDeg"])
+                if "altitudeBugFt" in autopilot:
+                    autopilot["altitudeBugFt"] = float(autopilot["altitudeBugFt"])
+
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[FORCE_TYPES] Autopilot after type forcing: {autopilot}")
+
             # Add non-empty groups to output
             if lights: out["lights"] = lights
             if systems: out["systems"] = systems
@@ -896,6 +1560,25 @@ class SimData:
             if indicators: out["indicators"] = indicators
             if environment: out["environment"] = environment
             if simulation: out["simulation"] = simulation
+
+            # Add nuevos grupos al output
+            if radios: out["radiosNavigation"] = radios
+            if indicators_additional:
+                if "indicators" not in out:
+                    out["indicators"] = {}
+                out["indicators"].update(indicators_additional)
+            if levers_additional:
+                if "levers" not in out:
+                    out["levers"] = {}
+                out["levers"].update(levers_additional)
+            if autopilot_additional:
+                if "autopilot" not in out:
+                    out["autopilot"] = {}
+                out["autopilot"].update(autopilot_additional)
+            if environment_additional:
+                if "environment" not in out:
+                    out["environment"] = {}
+                out["environment"].update(environment_additional)
 
             # Validar datos críticos antes de enviar
             if pos.get("latitudeDeg") is not None:
@@ -1161,17 +1844,20 @@ class FSUIPCWSClient:
         auto_lights_kwargs = {}
         auto_systems_kwargs = {}
         auto_environment_kwargs = {}
+        auto_radios_kwargs = {}
+        auto_indicators_kwargs = {}
+        auto_autopilot_kwargs = {}
 
         for key, cfg in READ_SIGNALS.items():
             if key not in payload:
                 continue
             
             # Skip offsets ya procesados manualmente
-            if key in ["IASraw_U32", "VSraw", "MagVar_U32", "BARO_0332_U32", "BARO_0330_U32", 
-                      "LIGHTS_BITS32", "BATTERY_MAIN", "PITOT_HEAT_U32", "brakeLeftU", 
-                      "brakeRightU", "parkingBrakeU", "flapsHandle", "gearHandle", 
+            if key in ["IASraw_U32", "VSraw", "MagVar_U32", "BARO_0332_U32", "BARO_0330_U32",
+                      "LIGHTS_BITS32", "BATTERY_MAIN", "PITOT_HEAT_U32", "brakeLeftU",
+                      "brakeRightU", "parkingBrakeU", "flapsHandle", "gearHandle",
                       "aircraftNameStr", "LatitudeDeg", "LongitudeDeg", "AltitudeM", "GroundAltRaw",
-                      "BankRaw", "PitchRaw", "HeadingTrueRaw"]:
+                      "BankRaw", "PitchRaw", "HeadingTrueRaw", "AP_HDG_BUG", "AP_ALT_BUG"]:
                 continue
                 
             val = payload[key]
@@ -1198,6 +1884,12 @@ class FSUIPCWSClient:
                 auto_systems_kwargs[sink_field] = val
             elif sink_group == "environment" and val is not None and sink_field not in auto_environment_kwargs:
                 auto_environment_kwargs[sink_field] = val
+            elif sink_group == "radios" and val is not None and sink_field not in auto_radios_kwargs:
+                auto_radios_kwargs[sink_field] = val
+            elif sink_group == "indicators" and val is not None and sink_field not in auto_indicators_kwargs:
+                auto_indicators_kwargs[sink_field] = val
+            elif sink_group == "autopilot" and val is not None and sink_field not in auto_autopilot_kwargs:
+                auto_autopilot_kwargs[sink_field] = val
 
         # --- Derivado: brakes_on (de U32) ---
         pb = None
@@ -1222,6 +1914,27 @@ class FSUIPCWSClient:
         # if brakes_on is not None:
             # systems_kwargs["brakes_on"] = brakes_on REVISAR FRENADO
 
+        # === AUTOPILOT BUGS (procesamiento manual) ===
+        autopilot_manual_kwargs = {}
+
+        if "AP_HDG_BUG" in payload:
+            hdg_bug = heading_bug_to_deg(payload["AP_HDG_BUG"])
+            if hdg_bug is not None:
+                autopilot_manual_kwargs["hdg_bug_deg"] = hdg_bug
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[AUTOPILOT] HDG Bug: {payload['AP_HDG_BUG']} → {hdg_bug}")
+
+        if "AP_ALT_BUG" in payload:
+            alt_bug = alt_bug_to_feet(payload["AP_ALT_BUG"])
+            if alt_bug is not None:
+                autopilot_manual_kwargs["alt_bug_ft"] = alt_bug
+                if DEBUG_FSUIPC_MESSAGES:
+                    print(f"[AUTOPILOT] ALT Bug: {payload['AP_ALT_BUG']} → {alt_bug}")
+
+        if autopilot_manual_kwargs:
+            asyncio.create_task(self.sim_data.update_autopilot_partial(**autopilot_manual_kwargs))
+            if DEBUG_FSUIPC_MESSAGES:
+                print(f"[DEBUG] Autopilot manual kwargs: {autopilot_manual_kwargs}")
 
         # Aplicar updates automáticos
         if auto_gps_kwargs:
@@ -1234,6 +1947,12 @@ class FSUIPCWSClient:
             asyncio.create_task(self.sim_data.update_systems_partial(**auto_systems_kwargs))
         if auto_environment_kwargs:
             asyncio.create_task(self.sim_data.update_environment_partial(**auto_environment_kwargs))
+        if auto_radios_kwargs:
+            asyncio.create_task(self.sim_data.update_radios_partial(**auto_radios_kwargs))
+        if auto_indicators_kwargs:
+            asyncio.create_task(self.sim_data.update_indicators_partial(**auto_indicators_kwargs))
+        if auto_autopilot_kwargs:
+            asyncio.create_task(self.sim_data.update_autopilot_partial(**auto_autopilot_kwargs))
 
         self.last_data_received_time = time.time()
 
