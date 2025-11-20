@@ -100,9 +100,14 @@ Follow these steps to get the bridge up and running.
     cd fsuipc-shirley-bridge
     ```
 
-2.  **Install the required Python library:**
+2.  **Install the required Python libraries:**
     ```bash
-    pip install websockets
+    pip install -r requirements.txt
+    ```
+
+    Or manually:
+    ```bash
+    pip install websockets python-dotenv
     ```
 
 3.  **Configure FSUIPC WebSocket Server:**
@@ -113,15 +118,52 @@ Follow these steps to get the bridge up and running.
 
 ### Configuration
 
-The script's primary settings can be adjusted at the top of `fsuipc_shirley_bridge.py`:
+The bridge can be configured using **environment variables** or a `.env` file. This makes it easy to change settings without modifying the code.
 
-```python
-# ===================== CONFIGURATION =====================
-FSUIPC_WS_URL = "ws://localhost:2048/fsuipc/"  # FSUIPC WebSocket Server URL
-WS_HOST = "localhost"                         # Host for the Shirley server
-WS_PORT = 2992                                # Port for the Shirley server
-SEND_INTERVAL = 0.25                          # Data broadcast rate in seconds (0.25 = 4 Hz)
-DEBUG_FSUIPC_MESSAGES = False                 # Set to True for verbose console logging
+1.  **Copy the example configuration file:**
+    ```bash
+    cp .env.example .env
+    ```
+
+2.  **Edit `.env` to customize your settings:**
+    ```bash
+    # FSUIPC Connection
+    FSUIPC_WS_URL=ws://localhost:2048/fsuipc/
+
+    # Shirley WebSocket Server
+    WS_HOST=localhost
+    WS_PORT=2992
+    WS_PATH=/api/v1
+
+    # Data transmission rate (in seconds)
+    SEND_INTERVAL=0.25
+
+    # Logging configuration
+    LOG_LEVEL=INFO
+    # LOG_FILE=fsuipc_shirley_bridge.log  # Uncomment to enable file logging
+
+    # Debug mode
+    DEBUG_FSUIPC_MESSAGES=false
+    ```
+
+**Configuration Options:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FSUIPC_WS_URL` | `ws://localhost:2048/fsuipc/` | FSUIPC WebSocket Server URL |
+| `WS_HOST` | `localhost` | Host for the Shirley WebSocket server |
+| `WS_PORT` | `2992` | Port for the Shirley WebSocket server |
+| `WS_PATH` | `/api/v1` | WebSocket path (for logging only) |
+| `SEND_INTERVAL` | `0.25` | Data broadcast interval in seconds (4 Hz) |
+| `LOG_LEVEL` | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `LOG_FILE` | _(none)_ | Optional path to log file. If not set, logs only to console |
+| `DEBUG_FSUIPC_MESSAGES` | `false` | Enable detailed FSUIPC message debugging |
+
+**Note:** You can also set these as environment variables directly without using a `.env` file:
+```bash
+export LOG_LEVEL=DEBUG
+export WS_PORT=3000
+python fsuipc_shirley_bridge.py
 ```
 
 <br>
@@ -137,10 +179,20 @@ DEBUG_FSUIPC_MESSAGES = False                 # Set to True for verbose console 
     
 Upon successful execution, you will see the following output in your terminal, confirming that both connections are active:
 ```
-[FSUIPCWS] Connected ws://localhost:2048/fsuipc/ (subprotocol=fsuipc)
-[FSUIPCWS] Offsets declared
-[FSUIPCWS] Started reading offsets every 250 ms
-[ShirleyWS] Serving at ws://localhost:2992/api/v1
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - ============================================================
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - FSUIPC-Shirley-Bridge Configuration
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - ============================================================
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - FSUIPC WebSocket URL: ws://localhost:2048/fsuipc/
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - Shirley WebSocket: ws://localhost:2992/api/v1
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - Send Interval: 0.25s (4.0 Hz)
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - Debug FSUIPC Messages: False
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - Log Level: INFO
+2025-01-20 15:30:00 - fsuipc_shirley_bridge - INFO - ============================================================
+2025-01-20 15:30:01 - fsuipc_shirley_bridge - INFO - Connecting to FSUIPC at ws://localhost:2048/fsuipc/
+2025-01-20 15:30:01 - fsuipc_shirley_bridge - INFO - Connected to FSUIPC (subprotocol=fsuipc)
+2025-01-20 15:30:01 - fsuipc_shirley_bridge - INFO - Declared 42 FSUIPC offsets
+2025-01-20 15:30:01 - fsuipc_shirley_bridge - INFO - Started reading FSUIPC offsets every 250 ms
+2025-01-20 15:30:01 - fsuipc_shirley_bridge - INFO - Shirley WebSocket server listening on ws://localhost:2992/api/v1
 ```
 
 <br>
