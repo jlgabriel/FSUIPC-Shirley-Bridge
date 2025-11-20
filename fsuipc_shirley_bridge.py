@@ -1,5 +1,8 @@
 import asyncio
 import json
+import logging
+import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Set
@@ -7,15 +10,81 @@ from typing import Optional, Dict, Any, Set
 import websockets
 import websockets.exceptions
 
+# Optional: Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed, will use system environment variables only
+    pass
+
+# ===================== LOGGING CONFIGURATION =====================
+def setup_logging():
+    """Configure logging system with appropriate handlers and formatters."""
+    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
+
+    # Create formatter
+    formatter = logging.Formatter(
+        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+
+    # File handler (optional, only if LOG_FILE is set)
+    handlers = [console_handler]
+    log_file = os.getenv("LOG_FILE")
+    if log_file:
+        try:
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setFormatter(formatter)
+            handlers.append(file_handler)
+        except Exception as e:
+            print(f"Warning: Could not create log file {log_file}: {e}", file=sys.stderr)
+
+    # Configure root logger
+    logging.basicConfig(
+        level=log_level,
+        handlers=handlers,
+        force=True
+    )
+
+    # Create module logger
+    logger = logging.getLogger("fsuipc_shirley_bridge")
+    logger.setLevel(log_level)
+
+    return logger
+
+# Initialize logging
+logger = setup_logging()
+
 # ===================== CONFIGURATION =====================
-FSUIPC_WS_URL = "ws://localhost:2048/fsuipc/"  # FSUIPC WebSocket Server (Paul Henty)
-WS_HOST = "localhost"
-WS_PORT = 2992
-WS_PATH = "/api/v1"                     # for logging only
-SEND_INTERVAL = 0.25                    # 4 Hz (every 250 ms)
-DEBUG_FSUIPC_MESSAGES = False
-# Set to True to enable detailed debugging of FSUIPC messages, JSON output, and broadcast info
+# Configuration values can be overridden via environment variables
+# Example: export FSUIPC_WS_URL="ws://192.168.1.100:2048/fsuipc/"
+
+FSUIPC_WS_URL = os.getenv("FSUIPC_WS_URL", "ws://localhost:2048/fsuipc/")
+WS_HOST = os.getenv("WS_HOST", "localhost")
+WS_PORT = int(os.getenv("WS_PORT", "2992"))
+WS_PATH = os.getenv("WS_PATH", "/api/v1")
+SEND_INTERVAL = float(os.getenv("SEND_INTERVAL", "0.25"))  # 4 Hz (every 250 ms)
+DEBUG_FSUIPC_MESSAGES = os.getenv("DEBUG_FSUIPC_MESSAGES", "false").lower() in ("true", "1", "yes")
+
+# Internal state (not configurable via environment)
 FIRST_PAYLOAD = False
+
+# Log configuration on startup
+logger.info("=" * 60)
+logger.info("FSUIPC-Shirley-Bridge Configuration")
+logger.info("=" * 60)
+logger.info(f"FSUIPC WebSocket URL: {FSUIPC_WS_URL}")
+logger.info(f"Shirley WebSocket: ws://{WS_HOST}:{WS_PORT}{WS_PATH}")
+logger.info(f"Send Interval: {SEND_INTERVAL}s ({1/SEND_INTERVAL:.1f} Hz)")
+logger.info(f"Debug FSUIPC Messages: {DEBUG_FSUIPC_MESSAGES}")
+logger.info(f"Log Level: {logging.getLevelName(logger.level)}")
+logger.info("=" * 60)
 
 # ===================== FSUIPC CONSTANTS =====================
 # Conversion factors
@@ -353,7 +422,7 @@ def knots128_to_kts(raw):
     try: return float(raw) / FSUIPC_SCALE_FACTOR_128
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] knots128_to_kts failed for {raw}: {e}")
+            logger.debug(f"Transform knots128_to_kts failed for {raw}: {e}")
         return None
 
 def vs_raw_to_fpm(raw):
@@ -361,7 +430,7 @@ def vs_raw_to_fpm(raw):
     try: return float(raw) * SECONDS_PER_MINUTE * METERS_TO_FEET / FSUIPC_SCALE_FACTOR_256
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] vs_raw_to_fpm failed for {raw}: {e}")
+            logger.debug(f"Transform vs_raw_to_fpm failed for {raw}: {e}")
         return None
 
 def meters256_to_m(raw):
@@ -369,7 +438,7 @@ def meters256_to_m(raw):
     try: return float(raw) / FSUIPC_SCALE_FACTOR_256
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] meters256_to_m failed for {raw}: {e}")
+            logger.debug(f"Transform meters256_to_m failed for {raw}: {e}")
         return None
 
 def magvar_raw_to_deg(raw):
@@ -385,7 +454,7 @@ def magvar_raw_to_deg(raw):
         return (val * FSUIPC_TURN_FRACTION_TO_DEG) / FSUIPC_SCALE_FACTOR_65536
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] magvar_raw_to_deg failed for {raw}: {e}")
+            logger.debug(f"Transform magvar_raw_to_deg failed for {raw}: {e}")
         return None
 
 def bits_to_bool_0(raw):
@@ -396,7 +465,7 @@ def bits_to_bool_0(raw):
         return None
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bits_to_bool_0 failed for {raw}: {e}")
+            logger.debug(f"Transform bits_to_bool_0 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_1(raw):
@@ -407,7 +476,7 @@ def bits_to_bool_1(raw):
         return None
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bits_to_bool_1 failed for {raw}: {e}")
+            logger.debug(f"Transform bits_to_bool_1 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_2(raw):
@@ -418,7 +487,7 @@ def bits_to_bool_2(raw):
         return None
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bits_to_bool_2 failed for {raw}: {e}")
+            logger.debug(f"Transform bits_to_bool_2 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_3(raw):
@@ -429,7 +498,7 @@ def bits_to_bool_3(raw):
         return None
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bits_to_bool_3 failed for {raw}: {e}")
+            logger.debug(f"Transform bits_to_bool_3 failed for {raw}: {e}")
         return None
 
 def bits_to_bool_4(raw):
@@ -440,7 +509,7 @@ def bits_to_bool_4(raw):
         return None
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bits_to_bool_4 failed for {raw}: {e}")
+            logger.debug(f"Transform bits_to_bool_4 failed for {raw}: {e}")
         return None
 
 def nonzero_to_bool(raw):
@@ -448,7 +517,7 @@ def nonzero_to_bool(raw):
     try: return bool(int(raw))
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] nonzero_to_bool failed for {raw}: {e}")
+            logger.debug(f"Transform nonzero_to_bool failed for {raw}: {e}")
         return None
 
 
@@ -460,7 +529,7 @@ def baro_to_inhg(raw):
         return mb * MB_TO_INHG_FACTOR     # Convert mb to inHg
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] baro_to_inhg failed for {raw}: {e}")
+            logger.debug(f"Transform baro_to_inhg failed for {raw}: {e}")
         return None
 
 # === U32 → lower16 helpers (from probe findings) ===
@@ -468,7 +537,7 @@ def lower16(u):
     try: return int(u) & FSUIPC_SIGNED_16BIT_MASK
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] lower16 failed for {u}: {e}")
+            logger.debug(f"Transform lower16 failed for {u}: {e}")
         return None
 
 def u32_baro_to_inhg(u):
@@ -499,7 +568,7 @@ def gs_u32_to_kts(raw):
         return (float(raw) / FSUIPC_SCALE_FACTOR_65536) * MPS_TO_KTS  # m/s → kts
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] gs_u32_to_kts failed for {raw}: {e}")
+            logger.debug(f"Transform gs_u32_to_kts failed for {raw}: {e}")
         return None
 
 # ===================== NUEVAS TRANSFORMACIONES PARA SCHEMA =====================
@@ -509,7 +578,7 @@ def bcd_to_freq_com(raw):
     try:
         val = int(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[COM_DEBUG] Raw COM frequency: {val} (hex: 0x{val:08X})")
+            logger.debug(f"COM_DEBUG: Raw COM frequency: {val} (hex: 0x{val:08X})")
 
         # FSUIPC COM frequencies are stored as packed BCD
         # Format: 0x0001XXYY where XX.YY is the frequency
@@ -538,19 +607,19 @@ def bcd_to_freq_com(raw):
                         khz_hundreds * 100 + khz_tens * 10 + khz_units
 
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[COM_DEBUG] BCD conversion: {mhz_hundreds}{mhz_tens}{mhz_units}.{khz_hundreds}{khz_tens}{khz_units} = {frequency_khz} kHz")
+            logger.debug(f"COM_DEBUG: BCD conversion: {mhz_hundreds}{mhz_tens}{mhz_units}.{khz_hundreds}{khz_tens}{khz_units} = {frequency_khz} kHz")
 
         # Validate COM range (118.000 - 136.975 MHz)
         if frequency_khz < 118000 or frequency_khz > 136975:
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[COM_DEBUG] Frequency {frequency_khz} out of range, using default 122750")
+                logger.debug(f"COM_DEBUG: Frequency {frequency_khz} out of range, using default 122750")
             return 122750
 
         return frequency_khz
 
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bcd_to_freq_com failed for {raw}: {e}")
+            logger.debug(f"Transform bcd_to_freq_com failed for {raw}: {e}")
         return 122750  # Default frequency
 
 def bcd_to_freq_com_official(raw):
@@ -558,7 +627,7 @@ def bcd_to_freq_com_official(raw):
     try:
         val = int(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[COM_OFFICIAL] Raw COM value: {val} (hex: 0x{val:04X})")
+            logger.debug(f"COM_OFFICIAL: Raw COM value: {val} (hex: 0x{val:04X})")
 
         # According to FSUIPC doc: 4 digits in BCD, leading 1 assumed
         # Example: 123.45 MHz -> 0x2345 (2345 decimal)
@@ -576,20 +645,20 @@ def bcd_to_freq_com_official(raw):
         frequency_khz = int(frequency_mhz * 1000)
 
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[COM_OFFICIAL] BCD digits: {tens_mhz}{units_mhz}.{tens_khz}{units_khz}")
-            print(f"[COM_OFFICIAL] Frequency: 1{tens_mhz}{units_mhz}.{tens_khz}{units_khz} MHz = {frequency_khz} kHz")
+            logger.debug(f"COM_OFFICIAL: BCD digits: {tens_mhz}{units_mhz}.{tens_khz}{units_khz}")
+            logger.debug(f"COM_OFFICIAL: Frequency: 1{tens_mhz}{units_mhz}.{tens_khz}{units_khz} MHz = {frequency_khz} kHz")
 
         # Validate range (118000-136975 kHz)
         if frequency_khz < 118000 or frequency_khz > 136975:
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[COM_OFFICIAL] Frequency {frequency_khz} out of COM range, using default")
+                logger.debug(f"COM_OFFICIAL: Frequency {frequency_khz} out of COM range, using default")
             return 122750
 
         return frequency_khz
 
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[COM_OFFICIAL] Transform failed for {raw}: {e}")
+            logger.debug(f"COM_OFFICIAL: Transform failed for {raw}: {e}")
         return 122750
 
 def bcd_to_freq_nav_official(raw):
@@ -597,7 +666,7 @@ def bcd_to_freq_nav_official(raw):
     try:
         val = int(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[NAV_OFFICIAL] Raw NAV value: {val} (hex: 0x{val:04X})")
+            logger.debug(f"NAV_OFFICIAL: Raw NAV value: {val} (hex: 0x{val:04X})")
 
         # According to FSUIPC doc: 4 digits in BCD, leading 1 assumed
         # Example: 113.45 MHz -> 0x1345
@@ -613,20 +682,20 @@ def bcd_to_freq_nav_official(raw):
         frequency_khz = int(frequency_mhz * 1000)
 
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[NAV_OFFICIAL] BCD digits: {tens_mhz}{units_mhz}.{tens_khz}{units_khz}")
-            print(f"[NAV_OFFICIAL] Frequency: 1{tens_mhz}{units_mhz}.{tens_khz}{units_khz} MHz = {frequency_khz} kHz")
+            logger.debug(f"NAV_OFFICIAL: BCD digits: {tens_mhz}{units_mhz}.{tens_khz}{units_khz}")
+            logger.debug(f"NAV_OFFICIAL: Frequency: 1{tens_mhz}{units_mhz}.{tens_khz}{units_khz} MHz = {frequency_khz} kHz")
 
         # Validate NAV range (108000-117950 kHz)
         if frequency_khz < 108000 or frequency_khz > 117950:
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[NAV_OFFICIAL] Frequency {frequency_khz} out of NAV range, using default")
+                logger.debug(f"NAV_OFFICIAL: Frequency {frequency_khz} out of NAV range, using default")
             return 110000
 
         return frequency_khz
 
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[NAV_OFFICIAL] Transform failed for {raw}: {e}")
+            logger.debug(f"NAV_OFFICIAL: Transform failed for {raw}: {e}")
         return 110000
 
 def bcd_to_xpdr_official(raw):
@@ -634,7 +703,7 @@ def bcd_to_xpdr_official(raw):
     try:
         val = int(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[XPDR_OFFICIAL] Raw transponder value: {val} (hex: 0x{val:04X})")
+            logger.debug(f"XPDR_OFFICIAL: Raw transponder value: {val} (hex: 0x{val:04X})")
 
         # According to FSUIPC doc: 4 digits in BCD format
         # Example: 0x1200 means 1200 on the dials
@@ -648,19 +717,19 @@ def bcd_to_xpdr_official(raw):
         result = thousands * 1000 + hundreds * 100 + tens * 10 + units
 
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[XPDR_OFFICIAL] BCD digits: {thousands}{hundreds}{tens}{units} = {result}")
+            logger.debug(f"XPDR_OFFICIAL: BCD digits: {thousands}{hundreds}{tens}{units} = {result}")
 
         # Validate transponder range (0000-7777)
         if result > 7777:
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[XPDR_OFFICIAL] Invalid transponder {result}, using 1200")
+                logger.debug(f"XPDR_OFFICIAL: Invalid transponder {result}, using 1200")
             return 1200
 
         return result
 
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[XPDR_OFFICIAL] Transform failed for {raw}: {e}")
+            logger.debug(f"XPDR_OFFICIAL: Transform failed for {raw}: {e}")
         return 1200
 
 def bcd_to_freq_nav(raw):
@@ -668,7 +737,7 @@ def bcd_to_freq_nav(raw):
     try:
         val = int(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[NAV_DEBUG] Raw NAV frequency: {val} (hex: 0x{val:08X})")
+            logger.debug(f"NAV_DEBUG: Raw NAV frequency: {val} (hex: 0x{val:08X})")
 
         # Similar to COM but different valid range
         # ... (same BCD parsing logic as COM)
@@ -683,7 +752,7 @@ def bcd_to_freq_nav(raw):
 
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bcd_to_freq_nav failed for {raw}: {e}")
+            logger.debug(f"Transform bcd_to_freq_nav failed for {raw}: {e}")
         return 110000
 
 def bcd_to_freq_com_simple(raw):
@@ -691,7 +760,7 @@ def bcd_to_freq_com_simple(raw):
     try:
         val = int(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[COM_SIMPLE] Raw value: {val}")
+            logger.debug(f"COM_SIMPLE: Raw value: {val}")
 
         # Si el valor parece razonable, usarlo directamente
         if 118000 <= val <= 136975:
@@ -714,7 +783,7 @@ def bcd_to_freq_com_simple(raw):
 
                     if 118000 <= frequency <= 136975:
                         if DEBUG_FSUIPC_MESSAGES:
-                            print(f"[COM_SIMPLE] Parsed {str_val} as {frequency} kHz")
+                            logger.debug(f"COM_SIMPLE: Parsed {str_val} as {frequency} kHz")
                         return frequency
             except:
                 pass
@@ -724,7 +793,7 @@ def bcd_to_freq_com_simple(raw):
 
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[COM_SIMPLE] Failed for {raw}: {e}")
+            logger.debug(f"COM_SIMPLE: Failed for {raw}: {e}")
         return 122750
 
 def bcd_to_xpdr(raw):
@@ -732,7 +801,7 @@ def bcd_to_xpdr(raw):
     try:
         val = int(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[XPDR_DEBUG] Raw transponder value: {val} (hex: 0x{val:04X})")
+            logger.debug(f"XPDR_DEBUG: Raw transponder value: {val} (hex: 0x{val:04X})")
 
         # FSUIPC transponder is stored as BCD in a 16-bit word
         # Each digit occupies 4 bits (nibble)
@@ -745,19 +814,19 @@ def bcd_to_xpdr(raw):
         result = digit1 * 1000 + digit2 * 100 + digit3 * 10 + digit4
 
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[XPDR_DEBUG] BCD digits: {digit1}{digit2}{digit3}{digit4} = {result}")
+            logger.debug(f"XPDR_DEBUG: BCD digits: {digit1}{digit2}{digit3}{digit4} = {result}")
 
         # Validate range (0000-7777 for transponder)
         if result > 7777:
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[XPDR_DEBUG] Invalid transponder code {result}, using 1200")
+                logger.debug(f"XPDR_DEBUG: Invalid transponder code {result}, using 1200")
             return 1200
 
         return result
 
     except (TypeError, ValueError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] bcd_to_xpdr failed for {raw}: {e}")
+            logger.debug(f"Transform bcd_to_xpdr failed for {raw}: {e}")
         return 1200  # Default squawk code
 
 def rpm_raw_to_rpm(raw):
@@ -766,7 +835,7 @@ def rpm_raw_to_rpm(raw):
         return float(raw)  # Direct conversion for most aircraft
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] rpm_raw_to_rpm failed for {raw}: {e}")
+            logger.debug(f"Transform rpm_raw_to_rpm failed for {raw}: {e}")
         return None
 
 def manifold_to_inhg(raw):
@@ -775,7 +844,7 @@ def manifold_to_inhg(raw):
         return float(raw) / 1024.0  # Typical FSUIPC scaling
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] manifold_to_inhg failed for {raw}: {e}")
+            logger.debug(f"Transform manifold_to_inhg failed for {raw}: {e}")
         return None
 
 def egt_to_celsius(raw):
@@ -784,7 +853,7 @@ def egt_to_celsius(raw):
         return (float(raw) * 850.0 / 16384.0) - 273.15  # Convert from Rankine
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] egt_to_celsius failed for {raw}: {e}")
+            logger.debug(f"Transform egt_to_celsius failed for {raw}: {e}")
         return None
 
 def temp_to_celsius(raw):
@@ -792,33 +861,33 @@ def temp_to_celsius(raw):
     try:
         val = float(raw)
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TEMP_DEBUG] Raw temp value: {val}")
+            logger.debug(f"TEMP_DEBUG: Raw temp value: {val}")
 
         # Si el valor es muy negativo, podría ser Kelvin*256 mal interpretado
         if val < -200:
             # Probablemente el valor necesita interpretación diferente
             # Try direct conversion assuming it's already in reasonable range
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[TEMP_DEBUG] Temperature out of range, using default")
+                logger.debug(f"TEMP_DEBUG: Temperature out of range, using default")
             return 15.0  # Temperature default for debugging
 
         # Conversión normal: raw/256 - 273.15 (from Kelvin*256)
         celsius = (val / 256.0) - 273.15
 
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TEMP_DEBUG] Converted temp: {celsius}°C")
+            logger.debug(f"TEMP_DEBUG: Converted temp: {celsius}°C")
 
         # Sanity check: Si está fuera de rango razonable (-50°C a +50°C)
         if celsius < -50 or celsius > 50:
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[TEMP_DEBUG] Temperature out of range, using default")
+                logger.debug(f"TEMP_DEBUG: Temperature out of range, using default")
             return 15.0  # Temperatura ambiente default
 
         return celsius
 
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TEMP_ERROR] Temperature conversion failed: {raw} -> {e}")
+            logger.debug(f"TEMP_ERROR: Temperature conversion failed: {raw} -> {e}")
         return 15.0  # Temperatura ambiente default
 
 def temp_to_celsius_alt(raw):
@@ -843,7 +912,7 @@ def fuel_to_gallons(raw):
         return float(raw) * 128.0 / (65536.0 * 256.0)
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] fuel_to_gallons failed for {raw}: {e}")
+            logger.debug(f"Transform fuel_to_gallons failed for {raw}: {e}")
         return None
 
 def oil_pressure_to_psi(raw):
@@ -852,7 +921,7 @@ def oil_pressure_to_psi(raw):
         return float(raw) / 16384.0 * 55.0  # Typical max 55 PSI
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] oil_pressure_to_psi failed for {raw}: {e}")
+            logger.debug(f"Transform oil_pressure_to_psi failed for {raw}: {e}")
         return None
 
 def throttle_to_percent(raw):
@@ -863,7 +932,7 @@ def throttle_to_percent(raw):
         return (val / 16384.0) * 100.0
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] throttle_to_percent failed for {raw}: {e}")
+            logger.debug(f"Transform throttle_to_percent failed for {raw}: {e}")
         return None
 
 def mixture_to_percent(raw):
@@ -874,7 +943,7 @@ def mixture_to_percent(raw):
         return (val / 16384.0) * 100.0
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] mixture_to_percent failed for {raw}: {e}")
+            logger.debug(f"Transform mixture_to_percent failed for {raw}: {e}")
         return None
 
 def prop_to_percent(raw):
@@ -885,7 +954,7 @@ def prop_to_percent(raw):
         return (val / 16384.0) * 100.0
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] prop_to_percent failed for {raw}: {e}")
+            logger.debug(f"Transform prop_to_percent failed for {raw}: {e}")
         return None
 
 def heading_bug_to_deg(raw):
@@ -894,11 +963,11 @@ def heading_bug_to_deg(raw):
         val = float(raw)
         result = (val * 360.0) / 65536.0 if val != 0 else 0.0
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] heading_bug_to_deg: {raw} → {result}")
+            logger.debug(f"Transform heading_bug_to_deg: {raw} → {result}")
         return result
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] heading_bug_to_deg failed for {raw}: {e}")
+            logger.debug(f"Transform heading_bug_to_deg failed for {raw}: {e}")
         return 0.0  # Always return a number
 
 def alt_bug_to_feet(raw):
@@ -907,11 +976,11 @@ def alt_bug_to_feet(raw):
         val = float(raw)
         result = val if val != 0 else 0.0
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] alt_bug_to_feet: {raw} → {result}")
+            logger.debug(f"Transform alt_bug_to_feet: {raw} → {result}")
         return result
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] alt_bug_to_feet failed for {raw}: {e}")
+            logger.debug(f"Transform alt_bug_to_feet failed for {raw}: {e}")
         return 0.0  # Always return a number
 
 def vs_target_to_fpm(raw):
@@ -920,7 +989,7 @@ def vs_target_to_fpm(raw):
         return float(raw)
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] vs_target_to_fpm failed for {raw}: {e}")
+            logger.debug(f"Transform vs_target_to_fpm failed for {raw}: {e}")
         return None
 
 def wind_to_kts(raw):
@@ -929,7 +998,7 @@ def wind_to_kts(raw):
         return float(raw)
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] wind_to_kts failed for {raw}: {e}")
+            logger.debug(f"Transform wind_to_kts failed for {raw}: {e}")
         return None
 
 def wind_dir_to_deg(raw):
@@ -938,7 +1007,7 @@ def wind_dir_to_deg(raw):
         return (float(raw) * 360.0) / 65536.0
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
-            print(f"[TRANSFORM] wind_dir_to_deg failed for {raw}: {e}")
+            logger.debug(f"Transform wind_dir_to_deg failed for {raw}: {e}")
         return None
 
 TRANSFORMS.update({
@@ -1362,19 +1431,19 @@ class SimData:
 
             # DEBUG: Check pos and att construction
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[DEBUG] pos dict: {pos}")
-                print(f"[DEBUG] att dict: {att}")
-                print(f"[DEBUG] self.xgps exists: {self.xgps is not None}")
-                print(f"[DEBUG] self.xatt exists: {self.xatt is not None}")
+                logger.debug(f"pos dict: {pos}")
+                logger.debug(f"att dict: {att}")
+                logger.debug(f"self.xgps exists: {self.xgps is not None}")
+                logger.debug(f"self.xatt exists: {self.xatt is not None}")
                 if self.xgps:
-                    print(f"[DEBUG] xgps latitude: {self.xgps.latitude}")
-                    print(f"[DEBUG] xgps longitude: {self.xgps.longitude}")
-                    print(f"[DEBUG] xgps alt_msl_meters: {self.xgps.alt_msl_meters}")
-                    print(f"[DEBUG] xgps ground_speed_kts: {self.xgps.ground_speed_kts}")
+                    logger.debug(f"xgps latitude: {self.xgps.latitude}")
+                    logger.debug(f"xgps longitude: {self.xgps.longitude}")
+                    logger.debug(f"xgps alt_msl_meters: {self.xgps.alt_msl_meters}")
+                    logger.debug(f"xgps ground_speed_kts: {self.xgps.ground_speed_kts}")
                 if self.xatt:
-                    print(f"[DEBUG] xatt heading_deg: {self.xatt.heading_deg}")
-                    print(f"[DEBUG] xatt pitch_deg: {self.xatt.pitch_deg}")
-                    print(f"[DEBUG] xatt roll_deg: {self.xatt.roll_deg}")
+                    logger.debug(f"xatt heading_deg: {self.xatt.heading_deg}")
+                    logger.debug(f"xatt pitch_deg: {self.xatt.pitch_deg}")
+                    logger.debug(f"xatt roll_deg: {self.xatt.roll_deg}")
 
             # New data groups
             lights = {}
@@ -1413,7 +1482,7 @@ class SimData:
                         if sink_key in ["hdg_bug_deg", "alt_bug_ft"]:
                             autopilot[parts[1]] = float(value)  # Explicitly float
                             if DEBUG_FSUIPC_MESSAGES:
-                                print(f"[AUTOPILOT_SNAPSHOT] {sink_key}: {value} → {float(value)}")
+                                logger.debug(f"AUTOPILOT_SNAPSHOT {sink_key}: {value} → {float(value)}")
                         elif "deg" in parts[1] or "ft" in parts[1] or "fpm" in parts[1]:
                             autopilot[parts[1]] = float(value)
                         else:
@@ -1421,7 +1490,7 @@ class SimData:
 
             # Debug: Mostrar grupo autopilot completo si hay datos
             if DEBUG_FSUIPC_MESSAGES and autopilot:
-                print(f"[DEBUG] Autopilot group being sent: {autopilot}")
+                logger.debug(f"Autopilot group being sent: {autopilot}")
 
             # Build levers group
             for sink_key, shirley_key in _LEVERS_SINK_TO_SHIRLEY.items():
@@ -1528,18 +1597,18 @@ class SimData:
             if pos:
                 out["position"] = pos
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[DEBUG] Added position to output: {len(pos)} fields")
+                    logger.debug(f"Added position to output: {len(pos)} fields")
             else:
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[DEBUG] WARNING: pos dict is empty!")
+                    logger.warning("Position dict is empty!")
 
             if att:
                 out["attitude"] = att
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[DEBUG] Added attitude to output: {len(att)} fields")
+                    logger.debug(f"Added attitude to output: {len(att)} fields")
             else:
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[DEBUG] WARNING: att dict is empty!")
+                    logger.warning("Attitude dict is empty!")
 
             # ALTERNATIVA FINAL: Forzar tipos correctos para campos problemáticos
             if autopilot:
@@ -1550,7 +1619,7 @@ class SimData:
                     autopilot["altitudeBugFt"] = float(autopilot["altitudeBugFt"])
 
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[FORCE_TYPES] Autopilot after type forcing: {autopilot}")
+                    logger.debug(f"Autopilot after type forcing: {autopilot}")
 
             # Add non-empty groups to output
             if lights: out["lights"] = lights
@@ -1583,16 +1652,16 @@ class SimData:
             # Validar datos críticos antes de enviar
             if pos.get("latitudeDeg") is not None:
                 if not validate_position_data(pos.get("latitudeDeg"), pos.get("longitudeDeg"), pos.get("mslAltitudeFt")):
-                    print(f"[WARNING] Invalid position data detected: lat={pos.get('latitudeDeg')}, lon={pos.get('longitudeDeg')}")
+                    logger.warning(f"Invalid position data detected: lat={pos.get('latitudeDeg')}, lon={pos.get('longitudeDeg')}")
 
             # Official Debug: Show complete JSON when debug enabled
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[DEBUG] Complete JSON to Shirley:")
-                print(json.dumps(out, indent=2))
-                print(f"[DEBUG] JSON groups: {list(out.keys())}")
+                logger.debug("Complete JSON to Shirley:")
+                logger.debug(json.dumps(out, indent=2))
+                logger.debug(f"JSON groups: {list(out.keys())}")
                 if out:
                     total_fields = sum(len(group) if isinstance(group, dict) else 1 for group in out.values())
-                    print(f"[DEBUG] Total fields: {total_fields}")
+                    logger.debug(f"Total fields: {total_fields}")
 
             # Return the complete snapshot with all groups
             return out
@@ -1640,7 +1709,7 @@ class FSUIPCWSClient:
     async def run(self):
         while True:
             try:
-                print(f"[FSUIPCWS] Connecting {self.url} …")
+                logger.info(f"Connecting to FSUIPC at {self.url}")
                 async with websockets.connect(
                     self.url,
                     max_size=None,
@@ -1649,7 +1718,7 @@ class FSUIPCWSClient:
                     ping_interval=None
                 ) as ws:
                     self.ws = ws
-                    print(f"[FSUIPCWS] Connected {self.url} (subprotocol={ws.subprotocol})")
+                    logger.info(f"Connected to FSUIPC (subprotocol={ws.subprotocol})")
 
                     # Build dynamic declare from READ_SIGNALS
                     declare_msg = {
@@ -1661,7 +1730,7 @@ class FSUIPCWSClient:
                         ],
                     }
                     await ws.send(json.dumps(declare_msg))
-                    print("[FSUIPCWS] Offsets declared")
+                    logger.info(f"Declared {len(READ_SIGNALS)} FSUIPC offsets")
 
                     # Start continuous reading from FSUIPC with fixed interval (ms)
                     read_msg = {
@@ -1670,7 +1739,7 @@ class FSUIPCWSClient:
                         "interval": int(SEND_INTERVAL * 1000)  # 250 ms if SEND_INTERVAL=0.25
                     }
                     await ws.send(json.dumps(read_msg))
-                    print(f"[FSUIPCWS] Started reading offsets every {int(SEND_INTERVAL*1000)} ms")
+                    logger.info(f"Started reading FSUIPC offsets every {int(SEND_INTERVAL*1000)} ms")
 
                     async for msg in ws:
                         # Convert bytes to str if necessary
@@ -1683,7 +1752,7 @@ class FSUIPCWSClient:
                             self._handle_incoming(msg)
 
             except Exception as e:
-                print(f"[FSUIPCWS] Error: {e!r}. Reconnecting in 2s…")
+                logger.error(f"FSUIPC connection error: {e!r}. Reconnecting in 2s...")
                 await asyncio.sleep(2)
 
     def _handle_incoming(self, msg: str):
@@ -1695,13 +1764,13 @@ class FSUIPCWSClient:
 
         # Debug log
         if DEBUG_FSUIPC_MESSAGES or FIRST_PAYLOAD:
-            print(f"[FSUIPCWS] Received: {data}")
+            logger.debug(f"FSUIPC received: {data}")
             FIRST_PAYLOAD = False
 
         # before detecting payload:
         if "command" in data and "success" in data and not any(k in data for k in ("data","values","offsets")):
             if not data.get("success"):
-                print(f"[FSUIPCWS] Command error: {data.get('errorMessage')}")
+                logger.error(f"FSUIPC command error: {data.get('errorMessage')}")
             return
 
         # Generic parser using table and partial updates
@@ -1922,19 +1991,19 @@ class FSUIPCWSClient:
             if hdg_bug is not None:
                 autopilot_manual_kwargs["hdg_bug_deg"] = hdg_bug
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[AUTOPILOT] HDG Bug: {payload['AP_HDG_BUG']} → {hdg_bug}")
+                    logger.debug(f"AUTOPILOT HDG Bug: {payload['AP_HDG_BUG']} → {hdg_bug}")
 
         if "AP_ALT_BUG" in payload:
             alt_bug = alt_bug_to_feet(payload["AP_ALT_BUG"])
             if alt_bug is not None:
                 autopilot_manual_kwargs["alt_bug_ft"] = alt_bug
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[AUTOPILOT] ALT Bug: {payload['AP_ALT_BUG']} → {alt_bug}")
+                    logger.debug(f"AUTOPILOT ALT Bug: {payload['AP_ALT_BUG']} → {alt_bug}")
 
         if autopilot_manual_kwargs:
             asyncio.create_task(self.sim_data.update_autopilot_partial(**autopilot_manual_kwargs))
             if DEBUG_FSUIPC_MESSAGES:
-                print(f"[DEBUG] Autopilot manual kwargs: {autopilot_manual_kwargs}")
+                logger.debug(f"Autopilot manual kwargs: {autopilot_manual_kwargs}")
 
         # Aplicar updates automáticos
         if auto_gps_kwargs:
@@ -1958,7 +2027,7 @@ class FSUIPCWSClient:
 
     async def write_offset(self, address: int, value: int, *, size: int, dtype: str = "int") -> bool:
         if not self.ws:
-            print("[FSUIPCWS] Write failed: not connected")
+            logger.warning("FSUIPC write failed: not connected")
             return False
         msg = {
             "command": "offsets.write",
@@ -1968,10 +2037,10 @@ class FSUIPCWSClient:
         }
         try:
             await self.ws.send(json.dumps(msg))
-            # Optional: wait for ACK if your server responds with success
+            logger.debug(f"Wrote to FSUIPC offset 0x{address:04X}: {value}")
             return True
         except Exception as e:
-            print(f"[FSUIPCWS] Write error: {e!r}")
+            logger.error(f"FSUIPC write error: {e!r}")
             return False
 
 # ===================== SHIRLEY WEBSOCKET SERVER =====================
@@ -1995,7 +2064,7 @@ class ShirleyWebSocketServer:
     async def handler(self, websocket, path=None):
         client_info = getattr(websocket, "remote_address", "Unknown")
         request_path = path if path is not None else getattr(websocket, "path", "/")
-        print(f"[ShirleyWS] Client connected {client_info} path={request_path}")
+        logger.info(f"Shirley client connected: {client_info} (path={request_path})")
 
         # --- Allow both /api/v1 and / (and variations with/without slash) ---
         def _norm(p: str) -> str:
@@ -2010,7 +2079,7 @@ class ShirleyWebSocketServer:
                 await websocket.close(code=1008, reason="Invalid path")
             except Exception:
                 pass
-            print(f"[ShirleyWS] Rejected client {client_info} wrong path={request_path}")
+            logger.warning(f"Rejected Shirley client {client_info}: invalid path {request_path}")
             return
 
         self.connections.add(websocket)
@@ -2058,25 +2127,25 @@ class ShirleyWebSocketServer:
         finally:
             if websocket in self.connections:
                 self.connections.remove(websocket)
-            print(f"[ShirleyWS] Client disconnected {client_info}")
+            logger.info(f"Shirley client disconnected: {client_info}")
 
     async def _handle_command(self, cmd: dict) -> bool:
         name = (cmd.get("name") or cmd.get("control") or "").strip()
         value = cmd.get("value", 0)
         spec = WRITE_COMMANDS.get(name)
         if not spec:
-            print(f"[CMD] Unknown command: {cmd}")
+            logger.warning(f"Unknown command received: {cmd}")
             return False
         try:
             raw = spec["encode"](value) if callable(spec.get("encode")) else value
             if spec["type"] == "offset":
                 ok = await self.fsuipc.write_offset(spec["address"], int(raw), size=spec["size"], dtype=spec["dtype"])
-                print(f"[CMD] {name} -> {value} (raw={raw}) ok={ok}")
+                logger.info(f"Command: {name} = {value} (raw={raw}) {'succeeded' if ok else 'failed'}")
                 return ok
-            print(f"[CMD] Unsupported write type for {name}: {spec['type']}")
+            logger.error(f"Unsupported write type for command {name}: {spec['type']}")
             return False
         except Exception as e:
-            print(f"[CMD] Error handling {cmd}: {e!r}")
+            logger.error(f"Error handling command {cmd}: {e!r}")
             return False
 
     async def broadcast_loop(self):
@@ -2086,13 +2155,13 @@ class ShirleyWebSocketServer:
 
                 # Official Debug: Show broadcast info
                 if DEBUG_FSUIPC_MESSAGES:
-                    print(f"[DEBUG] Broadcasting to {len(self.connections)} clients")
+                    logger.debug(f"Broadcasting to {len(self.connections)} clients")
                     if not snapshot:
-                        print(f"[DEBUG] WARNING: Empty snapshot!")
+                        logger.warning("Empty snapshot detected!")
 
                 # DEBUG: Verificar que no hay keys prohibidas
                 if any(key in snapshot for key in ["type", "reads", "writes"]):
-                    print(f"[ERROR] Snapshot contains prohibited keys: {list(snapshot.keys())}")
+                    logger.error(f"Snapshot contains prohibited keys: {list(snapshot.keys())}")
 
                 msg = json.dumps(snapshot)
                 stale = []
@@ -2102,19 +2171,19 @@ class ShirleyWebSocketServer:
                     except websockets.exceptions.ConnectionClosed:
                         stale.append(ws)
                     except Exception as e:
-                        print(f"[ShirleyWS] Send error: {e}")
+                        logger.error(f"Shirley broadcast send error: {e}")
                         stale.append(ws)
                 for ws in stale:
                     if ws in self.connections:
                         self.connections.remove(ws)
                 await asyncio.sleep(self.send_interval)
         except asyncio.CancelledError:
-            print("[ShirleyWS] Broadcast stopped")
+            logger.info("Shirley broadcast stopped")
 
     async def run(self):
         # Start server and broadcast loop
         self.server = await websockets.serve(self.handler, self.host, self.port)
-        print(f"[ShirleyWS] Serving at ws://{self.host}:{self.port}{self.path}")
+        logger.info(f"Shirley WebSocket server listening on ws://{self.host}:{self.port}{self.path}")
         broadcast_task = asyncio.create_task(self.broadcast_loop())
 
         try:
@@ -2122,7 +2191,7 @@ class ShirleyWebSocketServer:
             while True:
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
-            print("[ShirleyWS] Server stopping...")
+            logger.info("Shirley server stopping...")
         finally:
             broadcast_task.cancel()
             if self.server:
@@ -2144,4 +2213,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nBridge shutting down.")
+        logger.info("\nBridge shutting down.")
