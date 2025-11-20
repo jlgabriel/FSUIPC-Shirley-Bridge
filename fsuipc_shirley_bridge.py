@@ -131,6 +131,302 @@ FSUIPC_THROTTLE_MAX = 16384
 # --- Config de frenado ---
 USE_BRAKES_ON_INCLUDES_PARKING = True  # True: brakesOn = pedales OR parking
 
+# ===================== DATA VALIDATORS =====================
+"""
+Validation functions for ensuring data integrity.
+All validators return True if valid, False otherwise.
+They accept None and return False for None values.
+"""
+
+def validate_in_range(value: Optional[float], min_val: float, max_val: float,
+                      allow_none: bool = True) -> bool:
+    """
+    Validate that a numeric value is within a specified range.
+
+    Args:
+        value: The value to validate
+        min_val: Minimum acceptable value (inclusive)
+        max_val: Maximum acceptable value (inclusive)
+        allow_none: If True, None values are considered valid
+
+    Returns:
+        True if value is valid, False otherwise
+
+    Examples:
+        >>> validate_in_range(50.0, 0.0, 100.0)
+        True
+        >>> validate_in_range(150.0, 0.0, 100.0)
+        False
+        >>> validate_in_range(None, 0.0, 100.0, allow_none=True)
+        True
+        >>> validate_in_range(None, 0.0, 100.0, allow_none=False)
+        False
+    """
+    if value is None:
+        return allow_none
+    try:
+        val = float(value)
+        return min_val <= val <= max_val
+    except (TypeError, ValueError):
+        return False
+
+
+def validate_latitude(lat: Optional[float]) -> bool:
+    """Validate latitude (-90 to +90 degrees)."""
+    return validate_in_range(lat, -90.0, 90.0, allow_none=False)
+
+
+def validate_longitude(lon: Optional[float]) -> bool:
+    """Validate longitude (-180 to +180 degrees)."""
+    return validate_in_range(lon, -180.0, 180.0, allow_none=False)
+
+
+def validate_altitude(alt_ft: Optional[float]) -> bool:
+    """
+    Validate altitude in feet.
+
+    Accepts values from -1500 ft (Dead Sea, Death Valley) to 60000 ft (typical max).
+    """
+    return validate_in_range(alt_ft, -1500.0, 60000.0, allow_none=True)
+
+
+def validate_speed(speed_kts: Optional[float]) -> bool:
+    """
+    Validate speed in knots.
+
+    Accepts values from 0 to 600 kts (covers most GA and commercial aircraft).
+    """
+    return validate_in_range(speed_kts, 0.0, 600.0, allow_none=True)
+
+
+def validate_vertical_speed(vs_fpm: Optional[float]) -> bool:
+    """
+    Validate vertical speed in feet per minute.
+
+    Typical range: -6000 to +6000 fpm for most aircraft.
+    """
+    return validate_in_range(vs_fpm, -6000.0, 6000.0, allow_none=True)
+
+
+def validate_heading(heading_deg: Optional[float]) -> bool:
+    """Validate heading in degrees (0 to 360)."""
+    return validate_in_range(heading_deg, 0.0, 360.0, allow_none=True)
+
+
+def validate_pitch(pitch_deg: Optional[float]) -> bool:
+    """Validate pitch angle (-90 to +90 degrees)."""
+    return validate_in_range(pitch_deg, -90.0, 90.0, allow_none=True)
+
+
+def validate_roll(roll_deg: Optional[float]) -> bool:
+    """Validate roll angle (-180 to +180 degrees)."""
+    return validate_in_range(roll_deg, -180.0, 180.0, allow_none=True)
+
+
+def validate_temperature(temp_celsius: Optional[float]) -> bool:
+    """
+    Validate temperature in Celsius.
+
+    Accepts -60°C to +60°C (covers atmospheric conditions at cruise altitudes).
+    """
+    return validate_in_range(temp_celsius, -60.0, 60.0, allow_none=True)
+
+
+def validate_pressure(pressure_inhg: Optional[float]) -> bool:
+    """
+    Validate barometric pressure in inches of mercury.
+
+    Normal range: 28.00 to 31.00 inHg
+    Extended range for extreme conditions: 27.00 to 32.00 inHg
+    """
+    return validate_in_range(pressure_inhg, 27.0, 32.0, allow_none=True)
+
+
+def validate_rpm(rpm: Optional[float]) -> bool:
+    """
+    Validate engine RPM.
+
+    Accepts 0 to 10000 RPM (covers piston and turboprop engines).
+    """
+    return validate_in_range(rpm, 0.0, 10000.0, allow_none=True)
+
+
+def validate_n1_percent(n1: Optional[float]) -> bool:
+    """Validate N1 percentage (0 to 110% - allows slight over-range)."""
+    return validate_in_range(n1, 0.0, 110.0, allow_none=True)
+
+
+def validate_percentage(percent: Optional[float]) -> bool:
+    """Validate generic percentage (0 to 100)."""
+    return validate_in_range(percent, 0.0, 100.0, allow_none=True)
+
+
+def validate_com_frequency(freq_khz: Optional[int]) -> bool:
+    """
+    Validate COM radio frequency in kHz.
+
+    Aviation COM range: 118.000 to 136.975 MHz (118000 to 136975 kHz).
+    """
+    if freq_khz is None:
+        return True
+    try:
+        freq = int(freq_khz)
+        return 118000 <= freq <= 136975
+    except (TypeError, ValueError):
+        return False
+
+
+def validate_nav_frequency(freq_khz: Optional[int]) -> bool:
+    """
+    Validate NAV radio frequency in kHz.
+
+    Aviation NAV range: 108.000 to 117.950 MHz (108000 to 117950 kHz).
+    """
+    if freq_khz is None:
+        return True
+    try:
+        freq = int(freq_khz)
+        return 108000 <= freq <= 117950
+    except (TypeError, ValueError):
+        return False
+
+
+def validate_transponder_code(code: Optional[int]) -> bool:
+    """
+    Validate transponder squawk code.
+
+    Valid range: 0000 to 7777 (octal digits only).
+    """
+    if code is None:
+        return True
+    try:
+        c = int(code)
+        if c < 0 or c > 7777:
+            return False
+        # Check that all digits are octal (0-7)
+        str_code = str(c).zfill(4)
+        return all(d in '01234567' for d in str_code)
+    except (TypeError, ValueError):
+        return False
+
+
+def validate_throttle_command(value: Optional[float]) -> bool:
+    """
+    Validate throttle command value.
+
+    Accepts:
+    - Normalized range: -1.0 to +1.0 (fractional values for percentage)
+    - Raw range: Integer values from -16384 to +16384 (FSUIPC raw format)
+
+    Values between 1.0 and 16384 that are not close to integers are rejected
+    to avoid ambiguity between normalized and raw formats.
+    """
+    if value is None:
+        return False
+    try:
+        val = float(value)
+
+        # Normalized range (fractional values -1.0 to 1.0)
+        if -1.0 <= val <= 1.0:
+            return True
+
+        # Raw range (must be integer-like values outside normalized range)
+        # Allow values > 1.0 or < -1.0 only if they're close to integers
+        if abs(val - round(val)) < 0.01:  # Close enough to an integer
+            if -FSUIPC_THROTTLE_MAX <= val <= FSUIPC_THROTTLE_MAX:
+                return True
+
+        return False
+    except (TypeError, ValueError):
+        return False
+
+
+def validate_gear_command(value: Optional[int]) -> bool:
+    """
+    Validate gear handle command.
+
+    Accepts only 0 (retracted) or 1 (down).
+    Values must be exactly 0 or 1 (or floats very close to them like 0.0, 1.0).
+    """
+    if value is None:
+        return False
+    try:
+        val = float(value)
+        # Check if value is very close to 0 or 1
+        if abs(val - 0.0) < 0.01:
+            return True
+        if abs(val - 1.0) < 0.01:
+            return True
+        return False
+    except (TypeError, ValueError):
+        return False
+
+
+def sanitize_float(value: Any, default: float = 0.0) -> float:
+    """
+    Safely convert a value to float, returning default if conversion fails.
+
+    Args:
+        value: Value to convert
+        default: Default value to return on failure
+
+    Returns:
+        Float value or default
+
+    Examples:
+        >>> sanitize_float("123.45")
+        123.45
+        >>> sanitize_float("invalid", 0.0)
+        0.0
+        >>> sanitize_float(None, 10.0)
+        10.0
+    """
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def sanitize_int(value: Any, default: int = 0) -> int:
+    """
+    Safely convert a value to int, returning default if conversion fails.
+
+    Args:
+        value: Value to convert
+        default: Default value to return on failure
+
+    Returns:
+        Integer value or default
+    """
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def sanitize_bool(value: Any, default: bool = False) -> bool:
+    """
+    Safely convert a value to bool, returning default if conversion fails.
+
+    Args:
+        value: Value to convert
+        default: Default value to return on failure
+
+    Returns:
+        Boolean value or default
+    """
+    if value is None:
+        return default
+    try:
+        return bool(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # ===================== Declarative writes =====================
 WRITE_COMMANDS = {
     "GEAR_HANDLE": {  # 0=retracted, 1=down
@@ -1372,13 +1668,6 @@ class SimData:
                     self._levers_data[key] = value
             self.last_timestamp = iso_utc_ms()
 
-    async def update_indicators_partial(self, **kwargs):
-        async with self._lock:
-            for key, value in kwargs.items():
-                if value is not None:
-                    self._indicators_data[key] = value
-            self.last_timestamp = iso_utc_ms()
-
     async def update_environment_partial(self, **kwargs):
         async with self._lock:
             for key, value in kwargs.items():
@@ -2136,6 +2425,21 @@ class ShirleyWebSocketServer:
         if not spec:
             logger.warning(f"Unknown command received: {cmd}")
             return False
+
+        # Validate command value before processing
+        try:
+            if name == "GEAR_HANDLE":
+                if not validate_gear_command(value):
+                    logger.warning(f"Invalid gear command value: {value} (must be 0 or 1)")
+                    return False
+            elif name == "throttle":
+                if not validate_throttle_command(value):
+                    logger.warning(f"Invalid throttle command value: {value} (must be -1.0 to 1.0 or -16384 to 16384)")
+                    return False
+        except Exception as e:
+            logger.error(f"Error validating command {name}={value}: {e!r}")
+            return False
+
         try:
             raw = spec["encode"](value) if callable(spec.get("encode")) else value
             if spec["type"] == "offset":
