@@ -29,6 +29,22 @@ NOTAS DE PROTOCOLO (verificadas en vivo contra el servidor v1.1.4):
    se mueven solos y otros interpretan la escritura como un incremento --
    0x07D4 suma 1000 ft por escritura, sin importar el valor. Por eso cada
    comprobacion espera un valor concreto, no un cambio cualquiera.
+
+4. El servidor corta conexiones de forma intermitente: un `vars.calc` se queda
+   sin respuesta y el socket ya estaba cerrado, sin frame de cierre. El sim,
+   FSUIPC7 y el servidor siguen vivos, y la misma llamada funciona enseguida
+   sobre una conexion nueva. Por eso cada comprobacion corre sobre su propia
+   conexion y se reintenta.
+
+5. ESTE BARRIDO ENSUCIA EL AVION. Escribir sobre un offset de solo lectura deja
+   ese valor en el buffer de FSUIPC y lo sirve como telemetria para siempre --
+   sobrevive a desconectar, reconectar y volver a declarar. Despues de correr
+   con --write, 0x0E8C y 0x0E90 devuelven lo que se les escribio y no la
+   temperatura ni el viento reales. Solo se limpia reiniciando FSUIPC.
+
+6. Un espejo quieto tiene DOS causas: eco de FSUIPC, o el simulador rechazando
+   una orden que no corresponde a su estado. El tren en tierra se ve igual que
+   un eco. Un veredicto "eco" solo vale si el avion podia obedecer la orden.
 """
 
 import argparse
@@ -47,7 +63,11 @@ except (AttributeError, OSError):
 FSUIPC_WS_URL = "ws://localhost:2048/fsuipc/"
 GROUP = "verify"
 READ_INTERVAL_MS = 150
-CHANGE_TIMEOUT_S = 2.5
+# Ventanas generosas a proposito: en el King Air 350i los flaps tardan ~5 s en
+# recorrer su carrera y el pitot heat ~3 s en reflejarse. Con 2.5 s el barrido
+# reportaba "no" y "eco" en escrituras que si habian funcionado.
+CHANGE_TIMEOUT_S = 6.0
+MIRROR_TIMEOUT_S = 8.0
 
 # ===================== Offsets declarados =====================
 # name, address, type, size
@@ -114,14 +134,18 @@ Check = Dict[str, Any]
 CHECKS: List[Check] = [
     # --- levers ---
     dict(group="levers", field="flapsHandlePercentDown", offset="flapsPercent", mirror="m_flapsLeft",
-         values=(10922, 5461), event="{v} (>K:FLAPS_SET)", params=(10922, 5461)),
-    dict(group="levers", field="(flaps por indice)", offset="flapsIndex",
+         values=(10922, 5461), event="{v} (>K:FLAPS_SET)", params=(10922, 5461),
+         note="con 3 detentes (0x3BFA = 8191) los dos valores caen en el mismo, "
+              "y el resultado no distingue eco de 'ya estaba ahi'"),
+    dict(group="levers", field="(flaps por indice)", offset="flapsIndex", mirror="m_flapsLeft",
          values=(2, 1), event=None),
     dict(group="levers", field="speedBrakesHandlePercentDeployed", offset="spoilers", mirror="m_spoilerLeft",
-         values=(16383, 0), event=None, note="el C172 no tiene spoilers"),
+         values=(16384, 0), event="{v} (>K:SPOILERS_SET)", params=(16383, 0),
+         note="el despliegue pleno se normaliza a 16384, no a 16383"),
     dict(group="levers", field="landingGearHandlePercentDown", offset="gearHandle", mirror="m_gearCenter",
          values=(0, 16383), event="{v} (>K:GEAR_SET)", params=(0, 1),
-         note="el C172 es de tren fijo"),
+         note="EN TIERRA NO CONCLUYE: el sim se niega a replegar con peso sobre "
+              "las ruedas, asi que el espejo queda quieto por las dos vias"),
     dict(group="levers", field="carburetorHeatLeverPercentHot", offset="carbHeat",
          values=(1, 0), event="{v} (>K:ANTI_ICE_SET_ENG1)", params=(1, 0)),
     # --- autopilot ---
@@ -157,8 +181,9 @@ CHECKS: List[Check] = [
     dict(group="systems", field="pitotHeatSwitchOn", offset="pitotHeat",
          values=(1, 0), event="{v} (>K:PITOT_HEAT_SET)", params=(1, 0)),
     dict(group="systems", field="propHeatSwitchOn", offset="propDeice", mirror="m_propDeice",
-         values=(1, 0), event="{v} (>K:TOGGLE_STRUCTURAL_DEICE)", params=(1, 1),
-         note="el C172 no tiene deshielo"),
+         values=(1, 0), event=None,
+         note="solo hay via por offset: TOGGLE_STRUCTURAL_DEICE es deshielo de "
+              "celula, no de helice, y no mueve 0x2440"),
     # --- indicators / environment ---
     dict(group="indicators", field="altimeterSettingInchesMercury", offset="kohlsman",
          values=(16212, 16000), event="{v} (>K:KOHLSMAN_SET)", params=(16212, 16000)),
@@ -279,6 +304,11 @@ class FSUIPCClient:
             await asyncio.sleep(0.02)
         return None
 
+    async def about(self) -> dict:
+        await self.send({"command": "about.read", "name": "about"})
+        msg = await self.response("about.read", "about", timeout=4.0)
+        return (msg or {}).get("data") or {}
+
     async def declare(self) -> Optional[dict]:
         await self.send({"command": "offsets.declare", "name": GROUP,
                          "offsets": [{"name": n, "address": a, "type": t, "size": s}
@@ -391,7 +421,7 @@ async def run_check(cli: FSUIPCClient, rep: Report, chk: Check):
                 detail_parts.append("sin espejo: no se pudo descartar que sea eco")
             else:
                 loop = asyncio.get_running_loop()
-                deadline = loop.time() + 3.5
+                deadline = loop.time() + MIRROR_TIMEOUT_S
                 moved = False
                 while loop.time() < deadline:
                     if cli.state.get(mirror) != mirror_before:
@@ -434,6 +464,63 @@ async def run_check(cli: FSUIPCClient, rep: Report, chk: Check):
 
 # ===================== Main =====================
 
+async def open_session() -> Tuple[Any, "FSUIPCClient"]:
+    """Conecta, declara y se suscribe. Lanza excepcion si algo falla."""
+    ws = await websockets.connect(FSUIPC_WS_URL, subprotocols=["fsuipc"],
+                                  open_timeout=5, ping_interval=None, max_size=None)
+    cli = FSUIPCClient(ws)
+    await cli.start()
+    decl = await cli.declare()
+    if not decl or not decl.get("success"):
+        raise RuntimeError(f"declare fallo: "
+                           f"{decl.get('errorMessage') if decl else 'sin respuesta'}")
+    if not await cli.subscribe():
+        # El servidor levanta aunque FSUIPC no este hablando con el simulador,
+        # asi que conviene preguntarle antes de culpar al vuelo.
+        info = await cli.about()
+        if not info.get("isConnectionOpen"):
+            raise RuntimeError(
+                "el servidor esta arriba pero FSUIPC no esta conectado al "
+                "simulador (isConnectionOpen=false).\n"
+                "Abrir MSFS 2024, entrar en un vuelo y verificar que FSUIPC7 "
+                "muestre la conexion.")
+        raise RuntimeError(
+            f"conectado a {info.get('flightSimVersionText') or info.get('flightSim')} "
+            f"pero la suscripcion no entrego datos: probablemente el vuelo "
+            f"todavia esta cargando.")
+    return ws, cli
+
+
+async def close_session(ws, cli):
+    try:
+        await cli.unsubscribe()
+        await cli.close()
+        await ws.close()
+    except Exception:
+        pass
+
+
+async def run_check_isolated(chk: Check, rep: Report):
+    """Corre una comprobacion sobre su propia conexion, reintentando si el
+    servidor la corta (ver nota 4 en el encabezado)."""
+    for intento in (1, 2, 3):
+        ws = cli = None
+        try:
+            ws, cli = await open_session()
+            await run_check(cli, rep, chk)
+            return
+        except Exception as e:
+            if intento == 3:
+                rep.line(FAIL, f"{chk['field']}: sin resultado tras 3 intentos "
+                               f"({type(e).__name__})")
+            else:
+                print(f"      (conexion caida, reintento {intento + 1})")
+                await asyncio.sleep(1.2)
+        finally:
+            if ws is not None:
+                await close_session(ws, cli)
+
+
 async def main(do_write: bool, do_position: bool) -> int:
     rep = Report()
     print("=" * 74)
@@ -443,71 +530,71 @@ async def main(do_write: bool, do_position: bool) -> int:
     print("=" * 74)
 
     try:
-        ws = await websockets.connect(FSUIPC_WS_URL, subprotocols=["fsuipc"],
-                                      open_timeout=5, ping_interval=None, max_size=None)
-    except Exception as e:
+        ws, cli = await open_session()
+    except OSError as e:
         print(f"\nNo se pudo conectar: {e!r}")
         print("Verificar que C:\\FSUIPC7\\Utils\\FSUIPCWebSocketServer.exe este corriendo.")
         return 1
+    except Exception as e:
+        print(f"\n{e}")
+        return 1
 
-    async with ws:
-        cli = FSUIPCClient(ws)
-        await cli.start()
-        try:
-            decl = await cli.declare()
-            if not decl or not decl.get("success"):
-                print(f"\nNo se pudieron declarar los offsets: "
-                      f"{decl.get('errorMessage') if decl else 'sin respuesta'}")
-                return 1
-            if not await cli.subscribe():
-                print("\nLa suscripcion no entrego datos: probablemente no hay vuelo cargado.")
-                return 1
+    rep.line(PASS, f"conexion y suscripcion · {len(cli.state)} offsets")
+    rep.line(INFO, f"avion: {cli.state.get('aircraftName', '?')}")
+    incr = cli.state.get("flapsIncr")
+    if isinstance(incr, int) and incr:
+        rep.line(INFO, f"0x3BFA = {incr} · incremento por detente "
+                       f"-> {16383 // incr + 1} posiciones de flaps")
 
-            rep.line(PASS, f"conexion y suscripcion · {len(cli.state)} offsets")
-            rep.line(INFO, f"avion: {cli.state.get('aircraftName', '?')}")
-            incr = cli.state.get("flapsIncr")
-            if isinstance(incr, int) and incr:
-                rep.line(INFO, f"0x3BFA = {incr} · incremento por detente "
-                               f"-> {16383 // incr + 1} posiciones de flaps")
+    if not do_write:
+        print("\nValores actuales:")
+        for k, _, _, _ in OFFSETS:
+            print(f"          {k:<15} {fmt(cli.state.get(k))}")
+        print("\nVolver a ejecutar con --write para el barrido.")
+        await close_session(ws, cli)
+        return rep.summary()
 
-            if not do_write:
-                print("\nValores actuales:")
-                for k, _, _, _ in OFFSETS:
-                    print(f"          {k:<15} {fmt(cli.state.get(k))}")
-                print("\nVolver a ejecutar con --write para el barrido.")
-                return rep.summary()
+    baseline = dict(cli.state)
+    await close_session(ws, cli)
 
-            baseline = dict(cli.state)
+    checks = list(CHECKS)
+    if do_position:
+        checks += POSITION_CHECKS
+    checks += LAST_CHECKS
 
-            checks = list(CHECKS)
-            if do_position:
-                checks += POSITION_CHECKS
-            checks += LAST_CHECKS
+    current = None
+    for chk in checks:
+        if chk["group"] != current:
+            current = chk["group"]
+            print(f"\n--- {current} " + "-" * (66 - len(current)))
+        await run_check_isolated(chk, rep)
 
-            current = None
-            for chk in checks:
-                if chk["group"] != current:
-                    current = chk["group"]
-                    print(f"\n--- {current} " + "-" * (66 - len(current)))
-                await run_check(cli, rep, chk)
+    # --- restauracion ---
+    # Reescribir el valor inicial tambien deshace el envenenamiento de lectura
+    # (nota 5): el buffer de FSUIPC vuelve a servir lo que servia al empezar.
+    # Los espejos se saltean a proposito: son offsets de solo lectura que nadie
+    # toco, y escribirlos los envenenaria sin ganar nada.
+    print("\n--- restaurando estado inicial " + "-" * 42)
+    try:
+        ws, cli = await open_session()
+    except Exception as e:
+        rep.line(FAIL, f"no se pudo reconectar para restaurar: {e}")
+        return rep.summary()
 
-            # --- restauracion ---
-            print("\n--- restaurando estado inicial " + "-" * 42)
-            restored = 0
-            for name, _, _, _ in OFFSETS:
-                if name in ("aircraftName", "flapsIncr", "llFreeze"):
-                    continue
-                if cli.state.get(name) != baseline.get(name) and baseline.get(name) is not None:
-                    await cli.write(name, baseline[name])
-                    restored += 1
-            await asyncio.sleep(0.8)
-            rep.line(INFO, f"se reescribieron {restored} offsets a su valor inicial",
-                     "los que no aceptan escritura directa pueden haber quedado cambiados")
+    restored = 0
+    for name, _, _, _ in OFFSETS:
+        if name.startswith("m_") or name in ("aircraftName", "flapsIncr", "llFreeze"):
+            continue
+        if cli.state.get(name) != baseline.get(name) and baseline.get(name) is not None:
+            await cli.write(name, baseline[name])
+            restored += 1
+    await asyncio.sleep(0.8)
+    rep.line(INFO, f"se reescribieron {restored} offsets a su valor inicial",
+             "los que solo responden a eventos pueden haber quedado cambiados;\n"
+             "llFreeze y la bateria son toggles y hay que revisarlos a mano")
+    await close_session(ws, cli)
 
-            return rep.summary()
-        finally:
-            await cli.unsubscribe()
-            await cli.close()
+    return rep.summary()
 
 
 if __name__ == "__main__":
