@@ -1,232 +1,239 @@
-# FSUIPC Setpoint Capabilities for MSFS
+# FSUIPC Setpoint Capabilities for MSFS 2024
 
 **What a Shirley bridge built on FSUIPC7 can actually *set* in Microsoft Flight Simulator.**
 
-Prepared for the Airplane Team, August 2026. Mapped field-by-field against
+Prepared for the Airplane Team. Mapped field-by-field against
 `schemas/set_simdata_schemas_xplane.ts` from [Airplane-Team/sim-interface](https://github.com/Airplane-Team/sim-interface).
 
-- **Sim:** MSFS 2024 (Steam). MSFS 2020 not available for testing.
-- **FSUIPC7 v7.5.6**, licensed, with the bundled WebSocket Server and the WASM module active.
-- **Sources:** `FSUIPC7 Offsets Status.pdf` v0.8.4 (Jan 2026) — John Dowson's per-offset record of
-  which MSFS SimVars respond to reads and to writes — plus the ~23 000 MobiFlight/HubHop presets
-  shipped in `events.txt`, and `FSUIPC7 for Advanced Users.pdf`.
+| | |
+|---|---|
+| **Status** | Verified against a running sim, August 2026 |
+| **Sim** | MSFS 2024 (Steam), C172SP G1000, parked |
+| **Stack** | FSUIPC7 v7.5.7 · WebSocket Server v1.1.4 · WASM variable service active |
+| **Method** | Every claim exercised by [`tools/verify_msfs2024.py`](../tools/verify_msfs2024.py) |
+
+> **Revision note.** The first version of this document was derived from FSUIPC's offset-status
+> PDF alone and got several things wrong — it labelled flaps, the autopilot bugs and the radios
+> "read-only", which they are not. Live testing corrected those and, more importantly, replaced
+> the reasoning behind the central recommendation. The recommendation itself survived.
 
 ## Summary
 
-**Yes — FSUIPC can cover essentially all of `SetSimData` except weather.** Set the weather group
-aside and **36 of the remaining 42 schema fields are reachable**, most of them trivially. The gaps
-are few and specific:
+**Yes — FSUIPC can cover essentially all of `SetSimData` except weather.** Excluding the weather
+group, 36 of the remaining 42 schema fields are reachable.
+
+**Use control events, not offset writes.** This is the practical conclusion, and the reason
+matters more than the rule — see below.
 
 | Not reachable | Why |
 |---|---|
-| The whole `environment` weather group | Every ambient/pressure/visibility offset is **read-only**. The MSFS SDK exposes no weather write path to FSUIPC. Only `zuluTimeHours` and `dayOfYear` are settable. |
-| `failures.*` | `GENERAL ENG FAILED:n` offsets are read-only and there are no failure-set events. |
-| `simulation.isCrashed`, `simulation.shouldResetFlight` | No corresponding control event. |
+| The whole `environment` weather group | Verified: writes are accepted and echoed back, but never applied. Only `zuluTimeHours` and `dayOfYear` are settable. |
+| `failures.*` | Engine-failure offsets are read-only; no failure-set events exist. |
+| `simulation.isCrashed`, `shouldResetFlight` | No corresponding control event. |
 | `levers.propBetaEnabled` | `PROP BETA:n` is read-only; no beta-set event. |
 
-Everything else — flaps, gear, spoilers, all autopilot modes and bugs, lights, radios,
-transponder, altimeter, parking brake, battery, pitot heat, position and attitude — works.
+## The finding that should drive the design
+
+**FSUIPC accepts and echoes back writes that never reach the simulator.** Write to an offset, read
+it back, and you get exactly the value you wrote — whether or not SimConnect applied it. FSUIPC
+maintains its own offset buffer and serves reads from it. There is no error, no status flag, and
+no way to tell success from failure by reading the offset you just wrote.
+
+This was verified by writing an offset and watching a *mirror* — a second offset backed by the
+same SimVar, or the physical surface-position indicator:
+
+| Write | Offset reads back | Mirror | Applied? |
+|---|---|---|---|
+| Flaps `0x0BDC` = 10922 | 10922 | `0x0BE0` animated 0 → 1619 → 10922 | **yes** |
+| COM1 standby `0x311A` | 0x2185 | `0x05CC` moved 124.85 → 121.85 MHz | **yes** |
+| Spoilers `0x0BD0` = 16383 | 16383 | `0x0BD4` stayed 0 indefinitely | **no** |
+| OAT `0x0E8C` = 30 °C | 30 °C | `0x34A8` stayed 21.99 °C | **no** |
+| Wind `0x0E90` = 42 kt | 42 | `0x3488` stayed 0.0 m/s | **no** |
+
+Of the 20 fields whose offset accepted a write, only **3** could be proven to have reached the
+sim, **4** were proven not to, and **13** have no mirror available and therefore cannot be
+verified either way.
+
+Control events behave the opposite way: every event fired against a system the aircraft actually
+has produced an observable change. The two that did nothing — `GEAR_SET` and
+`TOGGLE_STRUCTURAL_DEICE` — were on a C172, which has fixed gear and no de-ice.
+
+So the rule is not "the offset is read-only". It is: **an offset write fails silently and
+indistinguishably from success, and a control event does not.** For a bridge that reports its
+capabilities to Shirley, that difference is the whole game.
 
 ## How writing works
 
-The important structural point: **MSFS makes many legacy offsets read-only**, because the
-underlying SimVar is not settable. Where that happens you send a *control event* instead. So a
-bridge needs two code paths, not one.
+**Control event** — the recommended path. Three interchangeable transports, all over the existing
+connection:
 
-The good news is that both paths travel over the same transport. `offsets.write` is enough for
-everything; you never strictly need a second WebSocket command.
+```json
+{"command":"vars.calc","name":"setFlaps","code":"10922 (>K:FLAPS_SET)"}
+```
 
-**1. Direct offset write** — for offsets whose SimVar is settable.
+- `vars.calc` — runs MSFS calculator code (RPN). Most legible; needs the WASM module.
+- offset `0x3110` — 32-bit control number + 32-bit parameter. Works in *unregistered* FSUIPC with
+  no WASM module: the most portable option.
+- offset `0x7C50` — send by name (`P:` preset, `L:` lvar, `H:` hvar, `I:` input event), with the
+  parameter in `0x7C90`.
+
+**Direct offset write** — for the few cases where it is verified, or where no event exists.
 
 ```json
 {"command":"offsets.write","name":"flightData",
  "offsets":[{"name":"gearHandle","value":16383}]}
 ```
 
-Note the shape: the offset must belong to a group you previously declared, and is referenced **by
-name, not address**. A successful write replies with an `offsets.read` response; you only get an
-`offsets.write` response back when it failed.
+The offset must belong to a previously declared group and is referenced **by name, not address**.
 
-**2. Control event via offset `0x3110`** — the universal escape hatch, and it works in
-*unregistered* FSUIPC with no WASM module. Write 8 bytes: a 32-bit control number followed by a
-32-bit parameter. FSUIPC fires the control the moment `0x3110` is written.
+## The matrix
 
-**3. Named preset via offset `0x7C50`** — write the parameter to `0x7C90` (32-bit), then the
-preset name prefixed with `P:` to `0x7C50` (max 64 chars). The same offset also takes `L:` to set
-an LVar, `H:` to fire an HVar and `I:` for Input Events. Requires the WASM module and that the
-name is known to FSUIPC.
+**Offset column** — ✅ verified applied (mirror moved) · ◐ accepted, no mirror available, cannot be
+verified · ✗ echo: accepted but proven not applied · ✕ rejected outright · — not applicable
 
-There is also `vars.calc`, a dedicated WebSocket command that executes raw MSFS calculator code
-(RPN). It is the most expressive option and the easiest to read, so the tables below name events
-in that form:
+**Event column** — ⚡ verified working · — none needed or none exists
 
-```json
-{"command":"vars.calc","name":"setFlaps","code":"16383 (>K:FLAPS_SET)"}
-```
+### levers
 
-Any `⚡` row below can be done through mechanism 2, 3 or `vars.calc` interchangeably. Mechanism 2
-is the most portable, since it needs neither the WASM module nor a licence.
-
-**Legend** — ✅ direct offset write · ⚡ control event · ⚠️ works with a caveat · ❌ not available
-
----
-
-## position
-
-Writing position teleports the aircraft. In practice these need slew mode (`0x05DC`, writable) or
-a freeze, otherwise the flight model fights the write.
-
-| Field | | Target | Conversion |
+| Field | Offset | Event | Notes |
 |---|---|---|---|
-| `latitudeDeg` | ✅ | offset `0x0560` (8 bytes) | `deg × (10001750 × 65536²) / 90` |
-| `longitudeDeg` | ✅ | offset `0x0568` (8 bytes) | `deg × 65536⁴ / 360` |
-| `mslAltitudeFt` | ✅ | offset `0x0570` (8 bytes) | metres × 65536² |
-| `aglAltitudeFt` | ⚠️ | derive | No settable AGL. Read ground altitude from `0x0020` (metres × 256, read-only) and write MSL = AGL + ground. |
-| `indicatedAirspeedKts` | ✅ | offset `0x02BC` (4 bytes) | knots × 128 |
+| `flapsHandlePercentDown` | ✅ `0x0BDC` | ⚡ `FLAPS_SET` | `0…16383`. MSFS snaps to the aircraft's detents: commanding 6041 read back as 5461. |
+| `speedBrakesHandlePercentDeployed` | ✗ `0x0BD0` | — | Echo on a C172, which has no spoilers. Retest on a spoiler-equipped aircraft. |
+| `landingGearHandlePercentDown` | ◐ `0x0BE8` | ⚡ `GEAR_SET` | Neither took on a fixed-gear C172, as expected. Retest on a retractable. |
+| `carburetorHeatLeverPercentHot` | ◐ `0x08B2` | ⚡ `ANTI_ICE_SET_ENG1` | Binary `0`/`1`, not a percentage — MSFS models carb heat as the engine anti-ice switch. |
+| `propBetaEnabled` | ✕ | — | `PROP BETA:n` read-only, no beta-set event. |
 
-## attitude
+### autopilot
 
-| Field | | Target | Conversion |
-|---|---|---|---|
-| `pitchAngleDegUp` | ✅ | offset `0x0578` (4 bytes) | `−deg × 65536² / 360` — FSUIPC is negative-for-nose-up, so the sign inverts |
-| `trueHeadingDeg` | ✅ | offset `0x0580` (4 bytes) | `deg × 65536² / 360` |
+Every field here has a working event. Offset writes are accepted but unverifiable.
 
-## radiosNavigation
-
-All radio offsets are read-only in MSFS; everything here is an event. Frequency parameters are
-4-digit **BCD with the leading 1 assumed** — 123.45 MHz is `0x2345`.
-
-| Field | | Target | Notes |
-|---|---|---|---|
-| `standbyFrequencyHz.com1` | ⚡ | `COM_STBY_RADIO_SET` | BCD |
-| `standbyFrequencyHz.com2` | ⚡ | `COM2_STBY_RADIO_SET` | BCD. Not exercised by any shipped preset — worth a live check. |
-| `standbyFrequencyHz.nav1` | ⚡ | `NAV1_STBY_SET` | BCD. Same caveat. |
-| `comShouldSwapFrequencies.com1` | ⚡ | `COM_STBY_RADIO_SWAP` | no parameter |
-| `comShouldSwapFrequencies.com2` | ⚡ | `COM2_STBY_RADIO_SWAP` | no parameter |
-| `transponderCode` | ⚡ | `XPNDR_SET` | BCD: squawk 1200 is `0x1200` |
-
-## lights
-
-Offset `0x0D0C` is a read-only bitmask in MSFS. Each light takes `0` or `1`.
-
-| Field | | Target |
+| Field | Offset | Event |
 |---|---|---|
-| `landingLightsSwitchOn` | ⚡ | `LANDING_LIGHTS_SET` |
-| `taxiLightsSwitchOn` | ⚡ | `TAXI_LIGHTS_SET` |
-| `navigationLightsSwitchOn` | ⚡ | `NAV_LIGHTS_SET` |
-| `strobeLightsSwitchOn` | ⚡ | `STROBES_SET` |
+| `isAutopilotEngaged` | ◐ `0x07BC` | ⚡ `AUTOPILOT_ON` / `AUTOPILOT_OFF` (`AP_MASTER` toggles) |
+| `isHeadingSelectEnabled` | ◐ `0x07C8` | ⚡ `AP_PANEL_HEADING_HOLD` |
+| `magneticHeadingBugDeg` | ◐ `0x07CC` | ⚡ `HEADING_BUG_SET` (degrees) |
+| `altitudeBugFt` | ✗ `0x07D4` | ⚡ `AP_ALT_VAR_SET_ENGLISH` (feet) |
+| `altitudeMode` = `altitudeHold` | ◐ `0x07D0` | ⚡ `AP_PANEL_ALTITUDE_HOLD` |
+| `altitudeMode` = `verticalSpeed` | ◐ `0x07EC` | ⚡ `AP_PANEL_VS_HOLD` |
+| `targetVerticalSpeedUpFpm` | ◐ `0x07F2` | ⚡ `AP_VS_VAR_SET_ENGLISH` (fpm) |
+| `isFlightDirectorEngaged` | — | ⚡ `TOGGLE_FLIGHT_DIRECTOR` — toggle only |
+| `shouldLevelWings` | — | ⚡ `AP_WING_LEVELER` |
 
-## indicators
+**`0x07D4` deserves a warning.** It does not accept a value: each write *increments* the altitude
+bug by exactly 1000 ft, whatever you write. Three consecutive writes of the same value produced
++1000, +1000, +1000. Use the event.
 
-| Field | | Target | Conversion |
-|---|---|---|---|
-| `altimeterSettingInchesMercury` | ✅ | offset `0x0330` (2 bytes) | millibars × 16, so `inHg / 0.02953 × 16`. `KOHLSMAN_SET` also works. |
+`altitudeMode`'s other values — `pitch`, `terrain`, `VNAV`, `TOGA`, `flightPathAngle`,
+`VNAVSpeed` — have no generic MSFS event. `levelChange` maps to `FLIGHT_LEVEL_CHANGE` and
+`glideSlope` to `AP_APR_HOLD`; neither was exercised on this aircraft.
 
-## levers
+### radiosNavigation
 
-| Field | | Target | Notes |
-|---|---|---|---|
-| `flapsHandlePercentDown` | ⚡ | `FLAPS_SET` | Parameter `0…16383`. **Offset `0x0BDC` is read-only** — this is the one place where the obvious approach fails. |
-| | ✅ | offset `0x0BFC` (1 byte) | Alternative: flaps handle *index* (detent number, 0 = up) rather than a percentage. |
-| `speedBrakesHandlePercentDeployed` | ✅ | offset `0x0BD0` (4 bytes) | `0…16383`. 4800 means "armed". |
-| `landingGearHandlePercentDown` | ✅ | offset `0x0BE8` (4 bytes) | `0` = up, `16383` = down. Effectively binary. |
-| `carburetorHeatLeverPercentHot` | ⚡ | `ANTI_ICE_SET_ENG1` | Binary `0`/`1`, not a percentage — MSFS models carb heat as the engine anti-ice switch. |
-| `propBetaEnabled` | ❌ | — | `PROP BETA:n` (`0x2418`) is read-only and there is no beta-set event. |
+Frequency parameters are 4-digit **BCD with the leading 1 assumed** — 123.45 MHz is `0x2345`.
 
-## autopilot
+| Field | Offset | Event |
+|---|---|---|
+| `standbyFrequencyHz.com1` | ✅ `0x311A` | ⚡ `COM_STBY_RADIO_SET` |
+| `standbyFrequencyHz.com2` | ✅ `0x311C` | ⚡ `COM2_STBY_RADIO_SET` |
+| `standbyFrequencyHz.nav1` | ◐ `0x311E` | ⚡ `NAV1_STBY_SET` |
+| `transponderCode` | ◐ `0x0354` | ⚡ `XPNDR_SET` — BCD, squawk 1200 is `0x1200` |
+| `comShouldSwapFrequencies` | — | `COM_STBY_RADIO_SWAP`, `COM2_STBY_RADIO_SWAP` — not exercised |
 
-Every autopilot offset is read-only in MSFS. All of this is events.
+### lights
 
-| Field | | Target | Notes |
-|---|---|---|---|
-| `isAutopilotEngaged` | ⚡ | `AUTOPILOT_ON` / `AUTOPILOT_OFF` | `AP_MASTER` toggles instead |
-| `isFlightDirectorEngaged` | ⚠️ | `TOGGLE_FLIGHT_DIRECTOR` | Toggle only — read the current state first to stay idempotent |
-| `isHeadingSelectEnabled` | ⚡ | `AP_HDG_HOLD_ON` / `AP_HDG_HOLD_OFF` | |
-| `magneticHeadingBugDeg` | ⚡ | `HEADING_BUG_SET` | degrees |
-| `altitudeBugFt` | ⚡ | `AP_ALT_VAR_SET_ENGLISH` | feet |
-| `targetVerticalSpeedUpFpm` | ⚡ | `AP_VS_VAR_SET_ENGLISH` | fpm. FSUIPC notes writes to the VS value only take effect *after* an AP VS SET control has been sent once — so send the event, not the offset. |
-| `shouldLevelWings` | ⚡ | `AP_WING_LEVELER` | |
-| `altitudeMode` | ⚠️ | partial | see below |
+`0x0D0C` is a bitmask; all four were driven by event and verified.
 
-`altitudeMode` maps cleanly for four of its eleven values:
-
-| Value | Event |
+| Field | Event |
 |---|---|
-| `altitudeHold` | `AP_ALT_HOLD_ON` (or `AP_PANEL_ALTITUDE_HOLD`) |
-| `verticalSpeed` | `AP_VS_HOLD` (or `AP_PANEL_VS_HOLD`) |
-| `levelChange` | `FLIGHT_LEVEL_CHANGE` |
-| `glideSlope` | `AP_APR_HOLD` |
-| `disabled` | the matching `*_OFF` event |
-| `pitch`, `terrain`, `VNAV`, `TOGA`, `flightPathAngle`, `VNAVSpeed` | no generic MSFS event — these are avionics-specific and would need per-aircraft LVars/HVars |
+| `navigationLightsSwitchOn` | ⚡ `NAV_LIGHTS_SET` |
+| `landingLightsSwitchOn` | ⚡ `LANDING_LIGHTS_SET` |
+| `taxiLightsSwitchOn` | ⚡ `TAXI_LIGHTS_SET` |
+| `strobeLightsSwitchOn` | ⚡ `STROBES_SET` |
 
-## systems
+### systems · indicators
 
-| Field | | Target | Notes |
+| Field | Offset | Event | Notes |
 |---|---|---|---|
-| `batteryOn.main` | ✅ | offset `0x281C` (4 bytes) | `0`/`1`. `TOGGLE_MASTER_BATTERY` also exists but toggles. |
-| `parkingBrakeOn` | ✅ | offset `0x0BC8` (2 bytes) | `0` = off, `32767` = on. `PARKING_BRAKE_SET` also works. |
-| `pitotHeatSwitchOn` | ⚡ | `PITOT_HEAT_SET` | `0`/`1`. Offset `0x029C` is read-only. |
-| `governorSwitchOn` | ⚡ | `HELICOPTER_ENGINE_1_GOVERNOR_SWITCH_SET` | helicopters only; `_2_` for the second engine |
-| `totalEnergyAudioSwitchOn` | ⚠️ | `TOGGLE_VARIOMETER_SWITCH` | Toggle only |
-| `propHeatSwitchOn` | ⚠️ | `TOGGLE_STRUCTURAL_DEICE` | `PROP DEICE SWITCH:n` (`0x2440`) is read-only and no prop-specific set event ships in the preset file. The structural de-ice toggle is the closest generic equivalent — needs a live check. |
+| `parkingBrakeOn` | ◐ `0x0BC8` | ⚡ `PARKING_BRAKE_SET` | Offset is `0` / `32767` |
+| `pitotHeatSwitchOn` | ◐ `0x029C` | ⚡ `PITOT_HEAT_SET` | |
+| `batteryOn.main` | ◐ `0x281C` | ⚡ `TOGGLE_MASTER_BATTERY` | Event toggles |
+| `altimeterSettingInchesMercury` | ◐ `0x0330` | ⚡ `KOHLSMAN_SET` | millibars × 16 |
+| `propHeatSwitchOn` | ✗ `0x2440` | — | Echo on a C172. No prop-specific set event ships in the preset catalogue. |
+| `governorSwitchOn` | — | `HELICOPTER_ENGINE_n_GOVERNOR_SWITCH_SET` | Helicopters only, not exercised |
+| `totalEnergyAudioSwitchOn` | — | `TOGGLE_VARIOMETER_SWITCH` | Toggle only, not exercised |
 
-## environment
+### environment
 
-**Weather cannot be set.** Every relevant offset — `AMBIENT TEMPERATURE`, `AMBIENT WIND
-VELOCITY`/`DIRECTION`, `AMBIENT VISIBILITY`, `AMBIENT PRESSURE`, `SEA LEVEL PRESSURE`, precipitation
-— is marked read-only, and FSUIPC's own release notes state the MSFS SDK gives it no weather
-write access. That rules out every cloud layer, wind layer, visibility, pressure, temperature,
-precipitation, runway friction, thermal and weather-evolution field in `SetEnvironment`.
+**Weather cannot be set — verified, not inferred.** Writes to ambient temperature and wind are
+accepted and echoed back while the sim's own value never moves; sea-level pressure is rejected
+outright. That rules out all 20 cloud-layer, wind-layer, visibility, pressure, temperature,
+precipitation, runway-friction, thermal and weather-evolution fields.
 
-Two fields survive:
+| Field | Event |
+|---|---|
+| `zuluTimeHours` | `ZULU_HOURS_SET`, `ZULU_MINUTES_SET` |
+| `dayOfYear` | `ZULU_DAY_SET` |
 
-| Field | | Target |
+### position · attitude · simulation · freezes
+
+| Field | Mechanism | Notes |
 |---|---|---|
-| `zuluTimeHours` | ⚡ | `ZULU_HOURS_SET` (plus `ZULU_MINUTES_SET`) |
-| `dayOfYear` | ⚡ | `ZULU_DAY_SET` |
+| `latitudeDeg` / `longitudeDeg` / `mslAltitudeFt` | offset `0x0560` / `0x0568` / `0x0570` | Teleports; needs slew (`0x05DC`, writable) or a freeze. Not exercised. |
+| `indicatedAirspeedKts` | offset `0x02BC` | knots × 128. Not exercised. |
+| `pitchAngleDegUp` / `trueHeadingDeg` | offset `0x0578` / `0x0580` | Sign inverts on pitch: FSUIPC is negative-for-nose-up. Not exercised. |
+| `positionFreezeEnabled` | ⚡ `FREEZE_LATITUDE_LONGITUDE_TOGGLE` | Verified. Toggle only — read `0x3540` first to stay idempotent. |
+| `isPaused` | `PAUSE_ON` / `PAUSE_OFF` | Not exercised. |
+| `simSpeedRatio` | `SIM_RATE_INCR` / `SIM_RATE_DECR` | Stepwise only; `0x0C1A` is read-only. |
+| `isCrashed`, `shouldResetFlight`, `failures.*` | — | No mechanism. |
 
-## simulation
+## Protocol notes
 
-| Field | | Target | Notes |
-|---|---|---|---|
-| `isPaused` | ⚡ | `PAUSE_ON` / `PAUSE_OFF` | |
-| `simSpeedRatio` | ⚠️ | `SIM_RATE_INCR` / `SIM_RATE_DECR` | Stepwise only — no absolute set. `SIMULATION RATE` (`0x0C1A`) is read-only, so you must read it and step toward the target. |
-| `isCrashed` | ❌ | — | |
-| `shouldResetFlight` | ❌ | — | Only `SITUATION_SAVE` exists; there is no reset/reload event. |
+Three behaviours of the WebSocket server that cost time to discover:
 
-## freezes
+**`offsets.read` responds on change, not on request.** If nothing in the group changed since the
+last response, the server sends nothing at all — not an empty payload, no response. A one-shot
+read after a quiet moment hangs forever. Subscribe once with `interval` and merge the partial
+payloads into a running state.
 
-| Field | | Target | Notes |
-|---|---|---|---|
-| `positionFreezeEnabled` | ⚠️ | `FREEZE_LATITUDE_LONGITUDE_TOGGLE` | Toggle only. Read the current state from `0x3540` (`IS LATITUDE LONGITUDE FREEZE ON`) to make it idempotent. `FREEZE_ALTITUDE_TOGGLE` and `FREEZE_ATTITUDE_TOGGLE` also exist; their status offsets `0x081C`/`0x081D` are documented as *not currently populated correctly*. Slew mode (`0x05DC`, writable) is the sturdier alternative. |
+**A malformed `offsets.write` is discarded silently.** Sending the undocumented
+`{"values":[{"address":…}]}` shape produces no error response whatsoever.
 
----
+**A successful `offsets.write` replies with an `offsets.read` response.** You only see an
+`offsets.write` response when it failed.
+
+## Input Events (`B:` vars, MSFS 2024 only)
+
+These are the modern per-aircraft cockpit controls, and they are the natural home for the
+`altitudeMode` values with no generic event. Two practical limits:
+
+- **They are not discoverable over the WebSocket.** `vars.list` returned 314 lvars and 0 hvars on
+  the C172, with no `I:`/`B:` entries at all. You must already know the name.
+- Reaching them means offset `0x7C50` with an `I:` prefix, or mapping them to offsets via an
+  `[InputEventOffsets]` section in `FSUIPC7.ini` — which requires each user to hand-edit a config
+  file, so it is poorly suited to a distributable bridge.
 
 ## Notes for the Shirley side
 
-**`SimPlatform` has no MSFS 2024.** The enum in `data_descriptor.ts` defines `xplane12`,
-`msfs2020` and `generic`. MSFS 2024 is a separate product with its own SimVar behaviour; if
-`msfs2020` is meant as a catch-all for MSFS, that is fine, but the naming will get confusing.
+**The endpoint is already compatible.** The airplane.team SimConnect bridge listens on
+`ws://localhost:2992/api/v1`, which is exactly what this FSUIPC bridge serves. An FSUIPC-backed
+bridge is a drop-in substitute: stop one, start the other, and `?msfs2024` connects unchanged.
 
-**Toggle-only fields need read-back.** `isFlightDirectorEngaged`, `totalEnergyAudioSwitchOn` and
-`positionFreezeEnabled` have no absolute setter in MSFS. A bridge can make them idempotent by
-reading current state first, but that is a race in principle. If `Writability.AfterRead` already
-carries that meaning on the Shirley side, these fit it naturally.
+**Toggle-only fields need a read first.** `isFlightDirectorEngaged`, `totalEnergyAudioSwitchOn`
+and `positionFreezeEnabled` have no absolute setter in MSFS. A bridge can make them idempotent by
+reading current state before toggling, though that is a race in principle — `Writability.AfterRead`
+fits them naturally.
 
-**Percent vs. detent.** `flapsHandlePercentDown` maps to a continuous `0…16383`, which MSFS then
-snaps to the aircraft's detents. Reading it back gives the snapped value, not the commanded one,
-so a naive write-then-verify will report a mismatch.
+**Percent versus detent.** `flapsHandlePercentDown` is continuous `0…16383`, which MSFS snaps to
+the aircraft's detents; offset `0x3BFA` gives the increment per detent (5461 on the C172, so four
+positions). Reading back gives the snapped value, so a naive write-then-verify reports a mismatch.
 
-**Carb heat is binary.** `carburetorHeatLeverPercentHot` is a percentage in the schema but a
-switch in MSFS.
+**Carb heat is binary** in MSFS, though the schema types it as a percentage.
 
-## Verification status
+## What has not been exercised
 
-Everything above is derived from FSUIPC7's own MSFS offset-status record and its shipped preset
-catalogue — that is, from what John Dowson has measured against MSFS, not from the FSX-era offset
-lists that circulate on the web. It has **not** yet been exercised against a running sim. The
-read/write determination comes from the status document's per-offset SDK response columns.
+Everything above marked "not exercised", plus: spoilers and prop de-ice need a suitably equipped
+aircraft; landing gear needs a retractable; `governorSwitchOn` needs a helicopter. The position
+and attitude writes are untested because they teleport the aircraft.
 
-Live confirmation is the obvious next step, and the fields worth testing first are the ones where
-the documentation leaves room for doubt: `COM2_STBY_RADIO_SET`, `NAV1_STBY_SET`, `propHeatSwitchOn`
-and the flaps percent-to-detent round-trip.
+Re-run [`tools/verify_msfs2024.py --write`](../tools/verify_msfs2024.py) on a different airframe
+to close those gaps; the script prints the same matrix.
