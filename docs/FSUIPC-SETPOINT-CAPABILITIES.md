@@ -1,6 +1,6 @@
 # FSUIPC Setpoint Capabilities for MSFS 2024
 
-**What a Shirley bridge built on FSUIPC7 can actually *set* in Microsoft Flight Simulator.**
+**What a Shirley bridge built on FSUIPC7 can actually *set* in Microsoft Flight Simulator 2024.**
 
 Prepared for the Airplane Team. Mapped field-by-field against
 `schemas/set_simdata_schemas_xplane.ts` from [Airplane-Team/sim-interface](https://github.com/Airplane-Team/sim-interface).
@@ -11,6 +11,11 @@ Prepared for the Airplane Team. Mapped field-by-field against
 | **Sim** | MSFS 2024 (Steam), C172SP G1000, parked |
 | **Stack** | FSUIPC7 v7.5.7 · WebSocket Server v1.1.4 · WASM variable service active |
 | **Method** | Every claim exercised by [`tools/verify_msfs2024.py`](../tools/verify_msfs2024.py) |
+
+> **Terminology.** In the simulation community *MSFS* on its own means MSFS 2020. Everything
+> here was tested exclusively on **MSFS 2024** and is written as such; nothing in this document
+> is a claim about MSFS 2020. Where a statement is common to both titles — the calculator-code
+> language, the `K:` event family — it is called out explicitly.
 
 > **Revision note.** The first version of this document was derived from FSUIPC's offset-status
 > PDF alone and got several things wrong — it labelled flaps, the autopilot bugs and the radios
@@ -97,10 +102,10 @@ verified · ✗ echo: accepted but proven not applied · ✕ rejected outright �
 
 | Field | Offset | Event | Notes |
 |---|---|---|---|
-| `flapsHandlePercentDown` | ✅ `0x0BDC` | ⚡ `FLAPS_SET` | `0…16383`. MSFS snaps to the aircraft's detents: commanding 6041 read back as 5461. |
+| `flapsHandlePercentDown` | ✅ `0x0BDC` | ⚡ `FLAPS_SET` | `0…16383`. MSFS 2024 snaps to the aircraft's detents: commanding 6041 read back as 5461. |
 | `speedBrakesHandlePercentDeployed` | ✗ `0x0BD0` | — | Echo on a C172, which has no spoilers. Retest on a spoiler-equipped aircraft. |
 | `landingGearHandlePercentDown` | ◐ `0x0BE8` | ⚡ `GEAR_SET` | Neither took on a fixed-gear C172, as expected. Retest on a retractable. |
-| `carburetorHeatLeverPercentHot` | ◐ `0x08B2` | ⚡ `ANTI_ICE_SET_ENG1` | Binary `0`/`1`, not a percentage — MSFS models carb heat as the engine anti-ice switch. |
+| `carburetorHeatLeverPercentHot` | ◐ `0x08B2` | ⚡ `ANTI_ICE_SET_ENG1` | Binary `0`/`1`, not a percentage — MSFS 2024 models carb heat as the engine anti-ice switch. |
 | `propBetaEnabled` | ✕ | — | `PROP BETA:n` read-only, no beta-set event. |
 
 ### autopilot
@@ -124,7 +129,7 @@ bug by exactly 1000 ft, whatever you write. Three consecutive writes of the same
 +1000, +1000, +1000. Use the event.
 
 `altitudeMode`'s other values — `pitch`, `terrain`, `VNAV`, `TOGA`, `flightPathAngle`,
-`VNAVSpeed` — have no generic MSFS event. `levelChange` maps to `FLIGHT_LEVEL_CHANGE` and
+`VNAVSpeed` — have no generic MSFS 2024 event. `levelChange` maps to `FLIGHT_LEVEL_CHANGE` and
 `glideSlope` to `AP_APR_HOLD`; neither was exercised on this aircraft.
 
 ### radiosNavigation
@@ -219,15 +224,15 @@ These are the modern per-aircraft cockpit controls, and they are the natural hom
 bridge is a drop-in substitute: stop one, start the other, and `?msfs2024` connects unchanged.
 
 **Toggle-only fields need a read first.** `isFlightDirectorEngaged`, `totalEnergyAudioSwitchOn`
-and `positionFreezeEnabled` have no absolute setter in MSFS. A bridge can make them idempotent by
+and `positionFreezeEnabled` have no absolute setter in MSFS 2024. A bridge can make them idempotent by
 reading current state before toggling, though that is a race in principle — `Writability.AfterRead`
 fits them naturally.
 
-**Percent versus detent.** `flapsHandlePercentDown` is continuous `0…16383`, which MSFS snaps to
+**Percent versus detent.** `flapsHandlePercentDown` is continuous `0…16383`, which MSFS 2024 snaps to
 the aircraft's detents; offset `0x3BFA` gives the increment per detent (5461 on the C172, so four
 positions). Reading back gives the snapped value, so a naive write-then-verify reports a mismatch.
 
-**Carb heat is binary** in MSFS, though the schema types it as a percentage.
+**Carb heat is binary** in MSFS 2024, though the schema types it as a percentage.
 
 ## What has not been exercised
 
