@@ -25,7 +25,7 @@ This tool is the essential link for creating an immersive, voice-controlled cock
   - [The Command Pipeline (Write Path)](#the-command-pipeline-write-path)
   - [Key Data Structures](#key-data-structures)
     - [The `READ_SIGNALS` Dictionary](#the-read_signals-dictionary)
-    - [The `WRITE_COMMANDS` Dictionary](#the-write_commands-dictionary)
+    - [The `SET_FIELDS` Dictionary](#the-set_fields-dictionary)
   - [The Transformation Layer](#the-transformation-layer)
 - [Shirley WebSocket API](#shirley-websocket-api)
 - [Troubleshooting](#-troubleshooting)
@@ -41,21 +41,22 @@ This bridge provides a comprehensive set of features to ensure seamless integrat
 ### Real-time Data Streaming (4Hz)
 -   **Position & Navigation**: Full GPS data including latitude, longitude, MSL/AGL altitude, indicated airspeed (IAS), ground speed, and vertical speed.
 -   **Attitude**: Precise attitude information such as true/magnetic heading, pitch, and roll angles.
--   **Aircraft Systems**: Status of main battery, pitot heat, brakes (pedal and parking), and more.
+-   **Aircraft Systems**: Status of main battery, pitot heat, parking brake, and propeller de-ice.
 -   **Lights**: Real-time status of navigation, landing, taxi, and strobe lights, decoded from FSUIPC bitmasks.
--   **Control Surfaces & Levers**: Percentage-based positions for flaps, landing gear, throttle, mixture, and propeller levers.
--   **Engine Indicators**: Key metrics like RPM, N1%, EGT, CHT, and manifold pressure for multiple engines.
+-   **Control Surfaces & Levers**: Percentage-based positions for flaps, landing gear, speed brakes, throttle, mixture, propeller and carburettor heat levers.
+-   **Engine Indicators**: N1 %, EGT and manifold pressure for two engines, plus the stall warning. Piston RPM has no usable legacy offset in MSFS 2024 and is not published — see the note in `READ_SIGNALS`.
 -   **Radios & Navigation**: Active and standby frequencies for COM/NAV radios and the current transponder code.
--   **Autopilot**: Full autopilot status, including engagement state, active modes (HDG, ALT, VS), and bug settings.
+-   **Autopilot**: Full autopilot status, including engagement state, active modes (HDG, ALT, VS), flight director, wing leveller, and bug settings.
 -   **Environment**: Ambient conditions like wind speed, direction, and outside air temperature.
 
 ### Bidirectional Aircraft Control
--   **Landing Gear**: Command the gear handle to be raised or lowered.
--   **Engine Controls**: Set throttle position with precision, from -100% to +100%.
--   **Extensible Command System**: The architecture is designed to easily add new writable commands for any FSUIPC-controllable system.
+-   **32 settable fields** across levers, autopilot, radios, lights, systems, indicators and time — essentially all of `SetSimData` except weather. See the [capability matrix](docs/FSUIPC-SETPOINT-CAPABILITIES.md).
+-   **Control events by default**: commands go out as MSFS calculator code, so a command the aircraft cannot honour leaves nothing behind. Direct offset writes are restricted to the two cases verified against a running simulator.
+-   **Honest refusals**: fields MSFS 2024 cannot set — the whole weather group, failures, crash and reset — are rejected with the reason instead of accepted and ignored.
 
 ### Advanced Capabilities
--   **Dynamic Capabilities Reporting**: Automatically informs connecting clients (like Shirley) of all readable data points and writable commands upon connection.
+-   **Dynamic Capabilities Reporting**: Automatically informs connecting clients (like Shirley) of all readable data points and settable fields upon connection.
+-   **Automatic Reconnection**: The FSUIPC WebSocket server drops client connections intermittently and without a close frame. The bridge reconnects with backoff, re-declares its offset group and re-subscribes.
 -   **Magnetic Variation Correction**: Automatically calculates and broadcasts the magnetic heading by correcting the true heading with the current magnetic variation.
 -   **Calculated Ground Track**: Derives the aircraft's true ground track by calculating the bearing between consecutive GPS coordinates, distinct from the aircraft's heading.
 -   **Robust Data Transformation**: A comprehensive library of transform functions converts raw FSUIPC offset data (e.g., BCD, bitfields, scaled integers) into standardized, human-readable units (degrees, knots, kHz, etc.).
@@ -224,12 +225,19 @@ This is the flow of data from the simulator to Shirley:
 
 This is the flow of commands from Shirley to the simulator:
 
-1.  **Reception**: The `ShirleyWebSocketServer.handler` receives a `SetSimData` JSON message (e.g., `{"type": "SetSimData", "commands": [{"name": "GEAR_HANDLE", "value": 1}]}`).
-2.  **Handling**: The server iterates through the commands and calls `_handle_command` for each.
-3.  **Lookup & Encode**: The command name (`GEAR_HANDLE`) is looked up in the `WRITE_COMMANDS` dictionary. The `encode` lambda function is executed with the provided value (`lambda v: 16383 if int(float(v)) else 0`), converting the simple `1` into the raw integer `16383` that FSUIPC expects.
-4.  **Forwarding**: The encoded command is passed to `fsuipc.write_offset`, which constructs a final JSON payload for FSUIPC.
-5.  **Execution**: The `FSUIPCWSClient` sends the write command to the FSUIPC server, which then modifies the simulator's memory, causing the gear handle to move.
-6.  **Acknowledgment**: The Shirley server sends a `SetSimDataAck` message back to the client to confirm the command was processed.
+This is the flow of commands from Shirley to the simulator:
+
+1.  **Reception**: `ShirleyWebSocketServer.handler` receives a `SetSimData` message. Shirley sends it as a bare nested object with the same shape as the data it receives — no `type` key, no command list: `{"levers": {"landingGearHandlePercentDown": 100}}`.
+2.  **Flattening**: `_flatten_set_simdata` walks the object down to its leaves, producing dotted paths such as `levers.landingGearHandlePercentDown` or `systems.batteryOn.main`.
+3.  **Lookup**: Each path is looked up in the `SET_FIELDS` dictionary, which names the mechanism to use and how to encode the value. Paths that MSFS 2024 cannot set are rejected with the reason rather than silently accepted.
+4.  **Execution**: `FSUIPCWSClient` dispatches by mechanism — a control event over `vars.calc`, a read-then-toggle for events that only flip, or a direct `offsets.write` for the two offsets where that is verified.
+5.  **Acknowledgment**: The server replies with a `SetSimDataAck` carrying one result per field.
+
+#### Why control events instead of offset writes
+
+**Writing an offset that MSFS 2024 does not apply produces no error.** FSUIPC keeps the written value in its own buffer and then serves it back on every read — across disconnects, reconnects and re-declarations. One write to `0x0E8C` leaves the bridge reporting an invented outside air temperature for the rest of the session, and Shirley consumes it as flight data.
+
+So the bridge never probes an offset to find out whether it is writable. The writable set is fixed in `WRITABLE_OFFSETS`, everything else goes through a control event, and `write_offset` refuses anything not on the list. See [`docs/FSUIPC-SETPOINT-CAPABILITIES.md`](docs/FSUIPC-SETPOINT-CAPABILITIES.md) for the field-by-field matrix and how each entry was verified.
 
 ### Key Data Structures
 
@@ -256,21 +264,28 @@ This dictionary is the heart of the data reading process. Each entry maps a cust
 -   `transform`: (Optional) The name of a function in the `TRANSFORMS` registry. This function is responsible for converting the raw value from FSUIPC into a standardized, human-readable unit.
 -   `sink`: A tuple `("group", "field")` that tells the `SimData` class where to store the final, processed value. This organizes the data into logical groups for the final JSON snapshot.
 
-#### The `WRITE_COMMANDS` Dictionary
+#### The `SET_FIELDS` Dictionary
 
-This dictionary defines all the actions that Shirley can command the aircraft to perform.
+This dictionary defines everything Shirley can set, keyed by the exact `SetSimData` path.
 
 **Example:**
 ```python
-"GEAR_HANDLE": {
-    "type": "offset",
-    "address": 0x0BE8, "size": 4, "dtype": "int",
-    "encode": lambda v: 16383 if int(float(v)) else 0,
+"levers.landingGearHandlePercentDown": {
+    "kind": "event", "code": "{v} (>K:GEAR_SET)", "encode": _enc_pct_flag, "verified": True,
 },
 ```
--   `type`: The command type. Currently, `offset` is used for direct memory writes.
--   `address`, `size`, `dtype`: Define the target memory location, size, and data type for the write operation.
--   `encode`: A crucial `lambda` function that translates a high-level, user-friendly value (e.g., `1` for "down", `0` for "up") into the raw numeric value that FSUIPC requires to perform the action. This creates a powerful abstraction layer.
+
+-   `kind`: the mechanism.
+    -   `event` — MSFS calculator code (RPN) sent through `vars.calc`. The default and the safe one.
+    -   `toggle` — the event only flips, so the bridge reads the current state from `READ_SIGNALS` first and fires only when it differs, keeping the operation idempotent.
+    -   `offset` — a direct `offsets.write`, restricted to `WRITABLE_OFFSETS`.
+    -   `custom` — needs its own logic (flaps by detent, the `altitudeMode` enum, Zulu time).
+-   `code`: the calculator code. `{v}` is replaced with the encoded value; `code_off` gives the falsy-value variant where one exists.
+-   `encode`: converts the schema's units into the event's parameter — percent to `0…16383`, kHz to 4-digit BCD, inches of mercury to millibars × 16.
+-   `state`: for `toggle`, which `(group, field)` holds the current value.
+-   `verified`: whether that mechanism was exercised against a running MSFS 2024 with a mirror confirming the simulator applied it.
+
+Fields the schema defines but MSFS 2024 cannot set live in `SET_FIELDS_UNSUPPORTED`, each with its reason, so a client gets an explanation instead of silence.
 
 ### The Transformation Layer
 
@@ -290,8 +305,10 @@ FSUIPC often provides data in raw, encoded, or scaled formats. The transformatio
 -   **Bitfield Processing**: Some offsets, like `0x0D0C` for lights, use individual bits of an integer as on/off flags. The bridge handles this by performing bitwise `AND` operations to check the status of each light.
     > `nav_on = bool(raw_value & (1<<0))` checks if the first bit is set.
 
--   **Derived Values**: Some data points are not read directly but are calculated from multiple offsets.
-    > The `brakes_on` status is logically derived by checking the values of the left brake, right brake, and parking brake offsets against predefined thresholds.
+-   **Derived Values**: Some data points are not read directly but are calculated from more than one offset.
+    > The altimeter setting prefers `0x0330` (altimeter 1) and falls back to `0x0332` (the second altimeter on a twin-altimeter panel) only when the first is out of plausible range. AGL comes from MSL altitude minus ground altitude, and magnetic heading from true heading minus magnetic variation.
+
+-   **No fabricated values**: a transform returns `None` when the raw value is out of range, and the field is then omitted from the snapshot rather than filled with a plausible-looking constant.
 
 <br>
 
@@ -308,7 +325,7 @@ The server immediately sends a `Capabilities` message:
     {"key": "LatitudeDeg", "group": "gps", "field": "latitude"},
     ...
   ],
-  "writes": ["GEAR_HANDLE", "throttle", ...]
+  "writes": ["autopilot.altitudeBugFt", "levers.landingGearHandlePercentDown", ...]
 }
 ```
 
@@ -333,23 +350,28 @@ The server sends JSON snapshots at the `SEND_INTERVAL` rate. The structure match
 ```
 
 **Receiving Commands:**
-Clients can send a `SetSimData` message to control the aircraft. The command is acknowledged with a `SetSimDataAck`.
+Clients send `SetSimData` as a bare nested object — the same shape as the data they receive, with no wrapper. Each message is acknowledged with a `SetSimDataAck` carrying one result per field.
 ```json
 // Client sends:
 {
-  "type": "SetSimData",
-  "commands": [
-    {"name": "GEAR_HANDLE", "value": 1} // 1 for down
-  ]
+  "levers": {"landingGearHandlePercentDown": 100},
+  "autopilot": {"altitudeBugFt": 5000}
 }
 
 // Server responds:
 {
   "type": "SetSimDataAck",
   "results": [
-    {"name": "GEAR_HANDLE", "ok": true}
+    {"field": "levers.landingGearHandlePercentDown", "ok": true},
+    {"field": "autopilot.altitudeBugFt", "ok": true}
   ]
 }
+```
+
+A field the bridge cannot set comes back with the reason:
+```json
+{"field": "environment.groundTemperatureDegC", "ok": false,
+ "error": "el clima no se puede fijar en MSFS 2024: las escrituras se aceptan y se devuelven en el eco, pero el simulador nunca las aplica"}
 ```
 
 <br>
