@@ -17,10 +17,13 @@ from fsuipc_shirley_bridge import (
     bcd_to_freq_com_official,
     bcd_to_freq_nav_official,
     bcd_to_xpdr_official,
-    rpm_raw_to_rpm,
     throttle_to_percent,
     mixture_to_percent,
     prop_to_percent,
+    carb_heat_to_percent,
+    egt_to_celsius,
+    manifold_to_inhg,
+    temp_to_celsius,
     heading_bug_to_deg,
     alt_bug_to_feet,
     wind_dir_to_deg,
@@ -226,16 +229,42 @@ class TestBcdToXpdrOfficial:
         assert bcd_to_xpdr_official(None) == 1200
 
 
-class TestRpmRawToRpm:
-    """Tests for RPM conversion."""
+class TestEngineIndicators:
+    """Tests for the engine offsets that pointed at the wrong SimVar."""
 
-    def test_direct_conversion(self):
-        # Direct pass-through for most aircraft
-        assert rpm_raw_to_rpm(2500) == 2500.0
-        assert rpm_raw_to_rpm(0) == 0.0
+    def test_manifold_pressure_inhg(self):
+        # 0x08C0: inHg * 1024. 29.92 inHg cruise value.
+        result = manifold_to_inhg(int(29.92 * 1024))
+        assert result is not None
+        assert abs(result - 29.92) < 0.01
+
+    def test_egt_full_scale(self):
+        # 0x08BE: 16384 = 860 C, linear. Not Rankine, not Kelvin.
+        assert abs(egt_to_celsius(16384) - 860.0) < 0.01
+        assert abs(egt_to_celsius(8192) - 430.0) < 0.01
+        assert egt_to_celsius(0) == 0.0
+
+    def test_egt_invalid_input(self):
+        assert egt_to_celsius(None) is None
+
+
+class TestTempToCelsius:
+    """Tests for ambient temperature: 0x0E8C is Celsius*256, signed."""
+
+    def test_positive_temperature(self):
+        assert abs(temp_to_celsius(15 * 256) - 15.0) < 0.01
+
+    def test_negative_temperature(self):
+        assert abs(temp_to_celsius(-40 * 256) - (-40.0)) < 0.01
+
+    def test_out_of_range_returns_none(self):
+        # Must return None, never a fabricated default: the old code returned
+        # 15.0 and the bridge published an invented temperature as telemetry.
+        assert temp_to_celsius(200 * 256) is None
+        assert temp_to_celsius(-300 * 256) is None
 
     def test_invalid_input(self):
-        assert rpm_raw_to_rpm(None) is None
+        assert temp_to_celsius(None) is None
 
 
 class TestThrottleToPercent:
@@ -258,8 +287,26 @@ class TestThrottleToPercent:
         assert result is not None
         assert abs(result) < 1.0
 
+    def test_reverse_thrust_stays_negative(self):
+        # 0x088C goes down to -4096 = -25%. Adding 65536 to "fix the sign"
+        # turned reverse thrust into roughly +300% power.
+        result = throttle_to_percent(-4096)
+        assert result is not None
+        assert abs(result - (-25.0)) < 0.01
+
     def test_invalid_input(self):
         assert throttle_to_percent(None) is None
+
+
+class TestCarbHeatToPercent:
+    """Carb heat is the engine anti-ice switch in MSFS 2024: binary."""
+
+    def test_on_off(self):
+        assert carb_heat_to_percent(1) == 100.0
+        assert carb_heat_to_percent(0) == 0.0
+
+    def test_invalid_input(self):
+        assert carb_heat_to_percent(None) is None
 
 
 class TestMixtureToPercent:
@@ -311,23 +358,32 @@ class TestHeadingBugToDeg:
         result = heading_bug_to_deg(49152)
         assert abs(result - 270.0) < 1.0
 
-    def test_invalid_input_returns_zero(self):
-        # Should return 0.0 instead of None for autopilot fields
-        assert heading_bug_to_deg(None) == 0.0
+    def test_invalid_input(self):
+        # None means "omit the field". Returning a fabricated 0.0 published a
+        # heading bug the aircraft never had.
+        assert heading_bug_to_deg(None) is None
 
 
 class TestAltBugToFeet:
-    """Tests for autopilot altitude bug conversion."""
+    """0x07D4 is metres * 65536, not feet."""
 
-    def test_direct_passthrough(self):
-        assert alt_bug_to_feet(10000) == 10000.0
-        assert alt_bug_to_feet(35000) == 35000.0
+    def _raw(self, feet):
+        return int(feet / 3.28084 * 65536)
+
+    def test_typical_altitudes(self):
+        assert abs(alt_bug_to_feet(self._raw(10000)) - 10000.0) < 1.0
+        assert abs(alt_bug_to_feet(self._raw(35000)) - 35000.0) < 1.0
 
     def test_zero(self):
         assert alt_bug_to_feet(0) == 0.0
 
-    def test_invalid_input_returns_zero(self):
-        assert alt_bug_to_feet(None) == 0.0
+    def test_raw_value_is_not_feet(self):
+        # The old code passed the raw value through, so a 5000 ft bug was
+        # published as 99 million feet.
+        assert alt_bug_to_feet(10000) < 1.0
+
+    def test_invalid_input(self):
+        assert alt_bug_to_feet(None) is None
 
 
 class TestWindDirToDeg:
