@@ -209,6 +209,23 @@ class TestReadPath:
         await feed(client, {"parkingBrakeU": 32767})
         assert (await sim.get_snapshot())["systems"]["parkingBrakeOn"] is True
 
+    async def test_radio_frequencies_are_suppressed_by_default(self):
+        """Shirley rejects frequencyHz/standbyFrequencyHz with "Unrecognized
+        key(s)", even though the published schema defines them. Every group is
+        .strict(), so sending them invalidates the whole radiosNavigation group
+        and the transponder code goes down with it."""
+        from fsuipc_shirley_bridge import PUBLISH_RADIO_FREQUENCIES
+
+        sim, client, _ = make_client()
+        await feed(client, {"COM1_FREQ": 0x1830, "COM1_STANDBY": 0x2485,
+                            "TRANSPONDER": 0x1200})
+        radios = (await sim.get_snapshot())["radiosNavigation"]
+
+        assert radios["transponderCode"] == 1200
+        if not PUBLISH_RADIO_FREQUENCIES:
+            assert "frequencyHz" not in radios
+            assert "standbyFrequencyHz" not in radios
+
     async def test_command_error_response_is_not_parsed_as_data(self):
         sim, client, _ = make_client()
         await client._handle_incoming(json.dumps({

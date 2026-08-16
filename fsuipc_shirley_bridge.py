@@ -72,6 +72,19 @@ WS_PATH = os.getenv("WS_PATH", "/api/v1")
 SEND_INTERVAL = float(os.getenv("SEND_INTERVAL", "0.25"))  # 4 Hz (every 250 ms)
 DEBUG_FSUIPC_MESSAGES = os.getenv("DEBUG_FSUIPC_MESSAGES", "false").lower() in ("true", "1", "yes")
 
+# Publicar o no las frecuencias COM/NAV.
+#
+# Apagado por defecto, y no por gusto: la Shirley en uso las rechaza con
+# "radiosNavigation: Unrecognized key(s) in object: 'frequencyHz',
+# 'standbyFrequencyHz'", aunque el esquema publicado del repo sim-interface las
+# define así en v2.12 y en v2.13 — o sea que la Shirley desplegada va con un
+# esquema anterior al publicado. Como cada grupo es .strict(), mandarlas marca
+# todo el feed como inválido y se pierde también el transponder, que sí acepta.
+#
+# Ponerlo en true cuando Shirley actualice; las frecuencias se leen igual y se
+# pueden escribir, sólo no se publican.
+PUBLISH_RADIO_FREQUENCIES = os.getenv("PUBLISH_RADIO_FREQUENCIES", "false").lower() in ("true", "1", "yes")
+
 # Internal state (not configurable via environment)
 FIRST_PAYLOAD = False
 
@@ -1687,6 +1700,18 @@ SINK_TO_SHIRLEY = {
     ("simulation", "aircraft_name"): ("simulation.aircraftName", "str"),
 }
 
+# Campos que se leen pero no se publican. Un campo que Shirley no reconoce
+# invalida el grupo entero, así que es preferible omitirlo antes que perder el
+# grupo completo por su culpa.
+SUPPRESSED_PATHS = frozenset() if PUBLISH_RADIO_FREQUENCIES else frozenset({
+    "radiosNavigation.frequencyHz.com1",
+    "radiosNavigation.frequencyHz.com2",
+    "radiosNavigation.frequencyHz.nav1",
+    "radiosNavigation.standbyFrequencyHz.com1",
+    "radiosNavigation.standbyFrequencyHz.com2",
+    "radiosNavigation.standbyFrequencyHz.nav1",
+})
+
 _SINK_COERCERS = {
     "bool":  bool,
     "float": float,
@@ -2012,6 +2037,8 @@ class SimData:
                 "simulation":  self._simulation_data,
             }
             for (group, field), (path, kind) in SINK_TO_SHIRLEY.items():
+                if path in SUPPRESSED_PATHS:
+                    continue
                 data = sources.get(group)
                 if data is None or field not in data or data[field] is None:
                     continue

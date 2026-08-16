@@ -38,8 +38,22 @@ from typing import Any, Dict, List, Optional, Tuple
 import websockets
 
 BRIDGE_URL = "ws://localhost:2992/api/v1"
+FSUIPC_URL = "ws://localhost:2048/fsuipc/"
 COLLECT_S = 4.0
 CHANGE_TIMEOUT_S = 8.0
+
+# Espejos: offsets que respaldan el mismo sistema que el campo escrito, pero
+# que el puente no escribe nunca. Hacen falta cuando el campo se lee del mismo
+# offset donde se escribe, porque ahí la lectura devuelve lo que uno escribió
+# aunque el simulador lo haya ignorado, y el resultado parece un éxito.
+#
+# El deshielo de hélice es el caso: 0x2440 se escribe y se lee. La primera
+# corrida de este arnés lo dio por bueno sobre un C172, que no tiene deshielo
+# de hélice — leyó su propia escritura.
+MIRRORS = [
+    ("propDeiceMirror", 0x337C, "uint", 4),   # el que se mueve cuando el deshielo entra de verdad
+    ("gearPosMirror",   0x0BEC, "uint", 4),   # recorrido real del tren, no la palanca
+]
 
 OK, WARN, BAD = "  ok  ", " ojo  ", " mal  "
 
@@ -173,9 +187,15 @@ WRITE_CHECKS = [
      "levers.speedBrakesHandlePercentDeployed", "distinto", 2,
      "el avión tiene que tener aerofrenos"),
 
+    # Se observa el espejo 0x337C y no el propio 0x2440, que devolvería la
+    # escritura tal cual y haría pasar la prueba en cualquier avión.
     ("deshielo de hélice",       "systems.propHeatSwitchOn",
-     "systems.propHeatSwitchOn", "flip", 0,
+     "mirror:propDeiceMirror", "flip", 0,
      "el avión tiene que tener deshielo de hélice"),
+
+    ("tren de aterrizaje",       "levers.landingGearHandlePercentDown",
+     "mirror:gearPosMirror", "distinto", 0,
+     "en tierra MSFS 2024 se niega a replegar con peso sobre ruedas"),
 
     # La batería va última a propósito. Cortarla deja sin barra a todo lo
     # eléctrico, y una prueba anterior que la dejó abierta hizo figurar como
@@ -231,6 +251,53 @@ def type_problem(path: str, value: Any) -> Optional[str]:
         if isinstance(value, bool):
             return "es bool y debería ser número"
     return None
+
+
+class MirrorReader:
+    """Lee offsets espejo por una conexión propia a FSUIPC.
+
+    Deliberadamente aparte del puente: el puente no declara estos offsets ni
+    los escribe nunca, que es justamente lo que los hace servir de testigo.
+    """
+
+    def __init__(self):
+        self.ws = None
+        self.state: Dict[str, Any] = {}
+        self._task = None
+
+    async def start(self) -> bool:
+        try:
+            self.ws = await asyncio.wait_for(
+                websockets.connect(FSUIPC_URL, subprotocols=["fsuipc"], max_size=None), timeout=5)
+        except Exception as e:
+            print(f"{WARN} sin espejos: no se pudo conectar a FSUIPC ({e!r})")
+            return False
+        await self.ws.send(json.dumps({
+            "command": "offsets.declare", "name": "mirrors",
+            "offsets": [{"name": n, "address": a, "type": t, "size": s} for n, a, t, s in MIRRORS]}))
+        await self.ws.send(json.dumps({
+            "command": "offsets.read", "name": "mirrors", "interval": 200}))
+        self._task = asyncio.create_task(self._pump())
+        await asyncio.sleep(1.0)
+        return True
+
+    async def _pump(self):
+        try:
+            async for raw in self.ws:
+                msg = json.loads(raw)
+                if msg.get("command") == "offsets.read" and isinstance(msg.get("data"), dict):
+                    self.state.update(msg["data"])
+        except Exception:
+            pass
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
 
 
 class Bridge:
@@ -382,20 +449,38 @@ def choose_target(goal: Any, current: Any, tol: float) -> Any:
     return goal
 
 
-async def phase_write(bridge: Bridge) -> int:
+async def phase_write(bridge: Bridge, mirrors: Optional[MirrorReader]) -> int:
     print("\n" + "=" * 92)
-    print("ESCRITURA — se manda el comando y se espera a que el campo se mueva en el snapshot")
+    print("ESCRITURA — se manda el comando y se espera a que el sistema se mueva de verdad")
     print("=" * 92 + "\n")
 
     failures = 0
     original: Dict[str, Any] = {}
+    airborne = (dig(bridge.state, "position.aglAltitudeFt") or 0) > 50
 
     for label, set_path, watch, goal, tol, equipment in WRITE_CHECKS:
-        baseline = dig(bridge.state, watch)
-        original.setdefault(set_path, baseline)
+        # Cortar la batería en vuelo no es una prueba, es una emergencia.
+        if airborne and "battery" in set_path:
+            print(f"{WARN} {label:<26} se omite: la aeronave está en vuelo")
+            continue
+
+        via_mirror = watch.startswith("mirror:")
+        if via_mirror:
+            if mirrors is None:
+                print(f"{WARN} {label:<26} se omite: hace falta el espejo y no hay conexión")
+                continue
+            mirror_name = watch.split(":", 1)[1]
+            baseline = mirrors.state.get(mirror_name)
+        else:
+            baseline = dig(bridge.state, watch)
+
+        # El valor a restaurar sale del propio campo, no del testigo: el espejo
+        # está en otra escala y devolverlo como si fuera el campo escribiría
+        # cualquier cosa.
+        original.setdefault(set_path, dig(bridge.state, set_path))
         target = choose_target(goal, baseline, tol)
 
-        if baseline is not None and not isinstance(target, bool) and \
+        if not via_mirror and baseline is not None and not isinstance(target, bool) and \
                 abs(float(baseline) - float(target)) <= tol:
             print(f"{WARN} {label:<26} ya estaba en {fmt(baseline)}, se saltea")
             continue
@@ -412,9 +497,17 @@ async def phase_write(bridge: Bridge) -> int:
             failures += 1
             continue
 
-        changed, now = await bridge.wait_change(watch, baseline, target, tol)
+        if via_mirror:
+            # Contra un espejo sólo se pide que se mueva: está en otra escala y
+            # a veces con otro recorrido, así que exigir un valor exacto sería
+            # inventar una expectativa.
+            changed, now = await wait_mirror_change(mirrors, mirror_name, baseline)
+        else:
+            changed, now = await bridge.wait_change(watch, baseline, target, tol)
+
         if changed:
-            print(f"{OK} {label:<26} {fmt(baseline)} -> {fmt(now)}")
+            via = " (espejo)" if via_mirror else ""
+            print(f"{OK} {label:<26} {fmt(baseline)} -> {fmt(now)}{via}")
         elif equipment:
             # Sin efecto, pero puede ser que la aeronave no tenga el sistema. No
             # es lo mismo que una falla del puente y no se cuenta como tal.
@@ -426,6 +519,23 @@ async def phase_write(bridge: Bridge) -> int:
 
     await restore(bridge, original)
     return failures
+
+
+async def wait_mirror_change(mirrors: MirrorReader, name: str,
+                             baseline: Any) -> Tuple[bool, Any]:
+    """Espera a que se mueva un offset que el puente nunca escribe.
+
+    Un espejo quieto no distingue entre 'FSUIPC devolvió el eco' y 'el avión no
+    tiene ese sistema'; eso lo resuelve la columna de equipo, no esta función.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + CHANGE_TIMEOUT_S
+    while loop.time() < deadline:
+        now = mirrors.state.get(name)
+        if now != baseline:
+            return True, now
+        await asyncio.sleep(0.1)
+    return False, mirrors.state.get(name)
 
 
 async def restore(bridge: Bridge, original: Dict[str, Any]) -> None:
@@ -492,12 +602,18 @@ async def main(do_write: bool) -> int:
     async with ws:
         bridge = Bridge(ws)
         await bridge.start()
+        mirrors = None
         try:
             problems = await phase_read(bridge)
             if do_write:
-                problems += await phase_write(bridge)
+                mirrors = MirrorReader()
+                if not await mirrors.start():
+                    mirrors = None
+                problems += await phase_write(bridge, mirrors)
                 problems += await phase_refusals(bridge)
         finally:
+            if mirrors is not None:
+                await mirrors.stop()
             await bridge.stop()
 
     print("\n" + "=" * 92)
