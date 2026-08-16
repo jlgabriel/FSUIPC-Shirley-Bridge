@@ -72,17 +72,18 @@ WS_PATH = os.getenv("WS_PATH", "/api/v1")
 SEND_INTERVAL = float(os.getenv("SEND_INTERVAL", "0.25"))  # 4 Hz (every 250 ms)
 DEBUG_FSUIPC_MESSAGES = os.getenv("DEBUG_FSUIPC_MESSAGES", "false").lower() in ("true", "1", "yes")
 
-# Publicar o no las frecuencias COM/NAV.
+# Whether to publish the COM/NAV frequencies.
 #
-# Apagado por defecto, y no por gusto: la Shirley en uso las rechaza con
-# "radiosNavigation: Unrecognized key(s) in object: 'frequencyHz',
-# 'standbyFrequencyHz'", aunque el esquema publicado del repo sim-interface las
-# define así en v2.12 y en v2.13 — o sea que la Shirley desplegada va con un
-# esquema anterior al publicado. Como cada grupo es .strict(), mandarlas marca
-# todo el feed como inválido y se pierde también el transponder, que sí acepta.
+# Off by default, and not out of preference: the Shirley build in use rejects
+# them with "radiosNavigation: Unrecognized key(s) in object: 'frequencyHz',
+# 'standbyFrequencyHz'", even though the published schema in the sim-interface
+# repo defines them that way in v2.12 and v2.13 — meaning the deployed Shirley
+# runs a schema older than the published one. Since every group is .strict(),
+# sending them marks the whole feed as invalid and the transponder, which it
+# does accept, is lost along with them.
 #
-# Ponerlo en true cuando Shirley actualice; las frecuencias se leen igual y se
-# pueden escribir, sólo no se publican.
+# Set this to true once Shirley catches up; the frequencies are still read and
+# can still be written, they are just not published.
 PUBLISH_RADIO_FREQUENCIES = os.getenv("PUBLISH_RADIO_FREQUENCIES", "false").lower() in ("true", "1", "yes")
 
 # Internal state (not configurable via environment)
@@ -437,33 +438,34 @@ def sanitize_bool(value: Any, default: bool = False) -> bool:
         return default
 
 
-# ===================== ESCRITURA HACIA EL SIMULADOR =====================
-# Nombre del grupo de offsets declarado ante FSUIPC. offsets.write exige un
-# grupo ya declarado y referencia los offsets por nombre, nunca por dirección.
+# ===================== WRITING TO THE SIMULATOR =====================
+# Name of the offset group declared to FSUIPC. offsets.write requires an
+# already declared group and refers to offsets by name, never by address.
 FSUIPC_GROUP = "flightData"
 
-# Único conjunto de offsets que este puente escribe, cerrado a propósito.
+# The only set of offsets this bridge writes, deliberately kept closed.
 #
-# Escribir un offset que MSFS 2024 no aplica no devuelve error: FSUIPC guarda
-# el valor en su propio buffer y después lo sirve como si fuera telemetría,
-# incluso después de desconectar, reconectar y volver a declarar el grupo. Un
-# solo intento contra 0x0E8C deja al puente informando una temperatura exterior
-# inventada durante el resto de la sesión. Por eso el puente nunca escribe un
-# offset "a ver si anda": si no está acá, va por evento o no va.
+# Writing an offset that MSFS 2024 does not apply returns no error: FSUIPC
+# keeps the value in its own buffer and then serves it back as if it were
+# telemetry, even after disconnecting, reconnecting and re-declaring the group.
+# A single attempt against 0x0E8C leaves the bridge reporting a made-up outside
+# air temperature for the rest of the session. That is why the bridge never
+# writes an offset just to see whether it sticks: if it is not here, it goes
+# through an event or it does not go at all.
 #
-# Los dos que están acá se verificaron en vivo con espejo sobre un King Air
-# 350i (0x0BFC movió 0x0BE0; 0x2440 movió 0x337C).
+# The two that are here were verified live with a mirror on a King Air 350i
+# (0x0BFC moved 0x0BE0; 0x2440 moved 0x337C).
 WRITABLE_OFFSETS = frozenset({"FLAPS_INDEX", "PROP_DEICE"})
 
 
-# --- Codificadores de valor -> parámetro del evento ---
+# --- Value -> event parameter encoders ---
 
 def _enc_pct_16383(v):
-    """Porcentaje 0..100 -> 0..16383."""
+    """Percentage 0..100 -> 0..16383."""
     return int(round(clamp(float(v), 0.0, 100.0) / 100.0 * FSUIPC_SCALE_FACTOR_16383))
 
 def _enc_pct_flag(v):
-    """Porcentaje -> 0/1. Para mandos que MSFS 2024 modela como binarios."""
+    """Percentage -> 0/1. For controls MSFS 2024 models as binary."""
     return 1 if float(v) >= 50.0 else 0
 
 def _enc_flag(v):
@@ -476,54 +478,54 @@ def _enc_int(v):
     return int(round(float(v)))
 
 def _enc_freq_bcd(khz):
-    """Frecuencia en kHz -> BCD de 4 dígitos con el 1 inicial sobreentendido.
+    """Frequency in kHz -> 4-digit BCD with the leading 1 implied.
 
-    Los campos frequencyHz del schema están acotados a [108000, 136975] pese al
-    nombre: son kHz. 121.850 MHz llega como 121850 y sale como 0x2185.
+    The schema's frequencyHz fields are bounded to [108000, 136975] despite the
+    name: they are kHz. 121.850 MHz arrives as 121850 and leaves as 0x2185.
     """
     digits = int(round(float(khz) / 10.0))     # 121850 -> 12185
     return int(f"{digits:05d}"[-4:], 16)       # "12185" -> "2185" -> 0x2185
 
 def _enc_xpdr_bcd(code):
-    """Código de transponder -> BCD. 1200 se manda como 0x1200."""
+    """Transponder code -> BCD. 1200 is sent as 0x1200."""
     return int(f"{int(code):04d}", 16)
 
 def _enc_kohlsman(inhg):
-    """Pulgadas de mercurio -> milibares * 16, que es lo que toma KOHLSMAN_SET."""
+    """Inches of mercury -> millibars * 16, which is what KOHLSMAN_SET takes."""
     return int(round(float(inhg) / MB_TO_INHG_FACTOR * FSUIPC_SCALE_FACTOR_16))
 
 
-# --- Tabla declarativa de escritura ---
+# --- Declarative write table ---
 #
-# Mecanismos, en orden de preferencia:
+# Mechanisms, in order of preference:
 #
-#   "event"  -> vars.calc con código de calculadora RPN. Es el camino
-#               recomendado: no toca el buffer de offsets de FSUIPC, así que un
-#               comando que el avión no puede honrar no deja nada sucio.
-#   "toggle" -> el evento sólo conmuta. Se lee el estado actual desde
-#               READ_SIGNALS y se dispara únicamente si hace falta, para que la
-#               operación siga siendo idempotente.
-#   "offset" -> escritura directa por nombre. Sólo para WRITABLE_OFFSETS.
-#   "custom" -> necesita lógica propia (flaps por detente, enums, hora zulú).
+#   "event"  -> vars.calc with RPN calculator code. This is the recommended
+#               path: it does not touch FSUIPC's offset buffer, so a command
+#               the aircraft cannot honour leaves nothing dirty behind.
+#   "toggle" -> the event only toggles. The current state is read from
+#               READ_SIGNALS and the event is fired only when needed, so the
+#               operation stays idempotent.
+#   "offset" -> direct write by name. Only for WRITABLE_OFFSETS.
+#   "custom" -> needs its own logic (flaps by detent, enums, zulu time).
 #
-# La columna 'verified' dice si el mecanismo se ejercitó contra MSFS 2024 con
-# un espejo que confirmara que el simulador lo aplicó de verdad.
+# The 'verified' column says whether the mechanism was exercised against MSFS
+# 2024 with a mirror confirming the simulator really applied it.
 SET_FIELDS = {
     # --- levers ---
     "levers.flapsHandlePercentDown": {
         "kind": "custom", "handler": "flaps", "verified": True,
-        "note": "convierte el porcentaje a índice de detente cuando el avión informa sus detentes",
+        "note": "converts the percentage to a detent index when the aircraft reports its detents",
     },
     "levers.speedBrakesHandlePercentDeployed": {
         "kind": "event", "code": "{v} (>K:SPOILERS_SET)", "encode": _enc_pct_16383, "verified": True,
     },
     "levers.landingGearHandlePercentDown": {
         "kind": "event", "code": "{v} (>K:GEAR_SET)", "encode": _enc_pct_flag, "verified": True,
-        "note": "en tierra MSFS 2024 se niega a replegar con peso sobre ruedas; no es una falla del puente",
+        "note": "on the ground MSFS 2024 refuses to retract with weight on wheels; not a bridge failure",
     },
     "levers.carburetorHeatLeverPercentHot.engine1": {
         "kind": "event", "code": "{v} (>K:ANTI_ICE_SET_ENG1)", "encode": _enc_pct_flag, "verified": True,
-        "note": "MSFS 2024 modela el aire caliente al carburador como el antihielo del motor: binario",
+        "note": "MSFS 2024 models carburetor heat as the engine anti-ice switch: binary",
     },
     "levers.carburetorHeatLeverPercentHot.engine2": {
         "kind": "event", "code": "{v} (>K:ANTI_ICE_SET_ENG2)", "encode": _enc_pct_flag, "verified": False,
@@ -542,8 +544,8 @@ SET_FIELDS = {
     },
     "autopilot.altitudeBugFt": {
         "kind": "custom", "handler": "altitude_bug", "verified": True,
-        "note": "el evento no fija el valor, mueve el preselector 1000 ft hacia el objetivo; "
-                "hay que converger",
+        "note": "the event does not set the value, it moves the preselector 1000 ft toward "
+                "the target; it has to converge",
     },
     "autopilot.targetVerticalSpeedUpFpm": {
         "kind": "event", "code": "{v} (>K:2:AP_VS_VAR_SET_ENGLISH)", "encode": _enc_int, "verified": True,
@@ -554,8 +556,8 @@ SET_FIELDS = {
     "autopilot.isFlightDirectorEngaged": {
         "kind": "toggle", "code": "(>K:TOGGLE_FLIGHT_DIRECTOR)",
         "state": ("autopilot", "flight_director_on"), "verified": True,
-        "note": "con el piloto automático puesto el avión lo fuerza encendido y no deja apagarlo; "
-                "no es una falla del puente",
+        "note": "with the autopilot engaged the aircraft forces it on and will not let it be "
+                "turned off; not a bridge failure",
     },
     "autopilot.shouldLevelWings": {
         "kind": "toggle", "code": "(>K:AP_WING_LEVELER)",
@@ -609,8 +611,8 @@ SET_FIELDS = {
     },
     "systems.propHeatSwitchOn": {
         "kind": "offset", "offset": "PROP_DEICE", "encode": _enc_flag, "verified": True,
-        "note": "único camino: no hay evento de deshielo de hélice en el catálogo de presets, y "
-                "TOGGLE_STRUCTURAL_DEICE mueve el deshielo de célula, no éste",
+        "note": "the only path: there is no prop de-ice event in the preset catalogue, and "
+                "TOGGLE_STRUCTURAL_DEICE moves airframe de-ice, not this one",
     },
 
     # --- indicators ---
@@ -618,7 +620,7 @@ SET_FIELDS = {
         "kind": "event", "code": "{v} (>K:KOHLSMAN_SET)", "encode": _enc_kohlsman, "verified": True,
     },
 
-    # --- environment (sólo tiempo: el clima no se puede fijar, ver docs) ---
+    # --- environment (time only: the weather cannot be set, see docs) ---
     "environment.zuluTimeHours": {
         "kind": "custom", "handler": "zulu_time", "verified": False,
     },
@@ -636,8 +638,8 @@ SET_FIELDS = {
     },
 }
 
-# Campos del schema que existen pero que MSFS 2024 no permite fijar. Se
-# rechazan con el motivo, en vez de aceptarlos en silencio y no hacer nada.
+# Schema fields that exist but that MSFS 2024 does not allow setting. They are
+# rejected with the reason, instead of being accepted silently and ignored.
 SET_FIELDS_UNSUPPORTED = {
     "levers.propBetaEnabled": "PROP BETA es de sólo lectura y no hay evento para fijarla",
     "systems.governorSwitchOn": "sólo helicópteros; sin verificar",
@@ -647,8 +649,8 @@ SET_FIELDS_UNSUPPORTED = {
     "simulation.simSpeedRatio": "SIM_RATE_INCR/DECR sólo va por pasos; 0x0C1A es de sólo lectura",
 }
 
-# Grupos de primer nivel de SetSimData. Sirven para reconocer un mensaje
-# entrante: Shirley manda el objeto anidado pelado, sin ninguna envoltura.
+# Top-level SetSimData groups. They are used to recognise an incoming message:
+# Shirley sends the bare nested object, with no wrapper at all.
 SET_SIMDATA_GROUPS = frozenset(
     [p.split(".")[0] for p in SET_FIELDS] +
     [p.split(".")[0] for p in SET_FIELDS_UNSUPPORTED] +
@@ -657,7 +659,7 @@ SET_SIMDATA_GROUPS = frozenset(
 
 
 def _flatten_set_simdata(body: Any, prefix: str = ""):
-    """Recorre el objeto anidado de SetSimData y produce (ruta, valor) por hoja."""
+    """Walk the nested SetSimData object and yield (path, value) per leaf."""
     if not isinstance(body, dict):
         return
     for key, value in body.items():
@@ -669,8 +671,8 @@ def _flatten_set_simdata(body: Any, prefix: str = ""):
 
 
 def _unsupported_reason(path: str) -> str:
-    """Por qué el puente no escribe este campo. Se responde el motivo en vez de
-    aceptar el campo en silencio y no hacer nada."""
+    """Why the bridge does not write this field. The reason is answered back
+    instead of accepting the field silently and doing nothing."""
     if path in SET_FIELDS_UNSUPPORTED:
         return SET_FIELDS_UNSUPPORTED[path]
     if path.startswith("failures."):
@@ -691,16 +693,16 @@ def fmt_ft(value: Any) -> str:
 
 
 def _calc_tag(path: str) -> str:
-    """Etiqueta corta y estable para correlacionar la respuesta de vars.calc."""
+    """Short, stable tag used to correlate the vars.calc response."""
     return "set_" + path.replace(".", "_")
 
 # ===================== CAPABILITIES FUNCTIONS =====================
 def compute_capabilities_writes():
     """
-    Rutas de SetSimData que el puente sabe escribir.
+    SetSimData paths the bridge knows how to write.
 
     Returns:
-        Lista ordenada de rutas con puntos, tal como llegan de Shirley.
+        Sorted list of dotted paths, exactly as they arrive from Shirley.
 
     Example:
         >>> writes = compute_capabilities_writes()
@@ -842,15 +844,15 @@ def fs_angle_deg(raw: int) -> float:
 
 
 # ===================== FSUIPC SIGNAL DEFINITIONS =====================
-# Cada entrada declara un offset FSUIPC, la transformación que lo lleva a las
-# unidades de Shirley y el 'sink' (grupo interno, campo) donde se deposita.
+# Each entry declares an FSUIPC offset, the transform that takes it to
+# Shirley's units and the 'sink' (internal group, field) it is deposited into.
 #
-# Direcciones, tamaños y SimVars verificados contra
-# "FSUIPC7 Offsets Status.pdf" v0.8.4 para MSFS 2024. El SimVar real va en el
-# comentario porque varios offsets de la era FSX apuntan hoy a otra cosa
-# distinta de la que sugiere su nombre histórico: 0x08A0 no es la presión de
-# admisión sino el flujo de combustible, 0x08B8 no es la EGT sino la
-# temperatura de aceite, y 0x0898 no son RPM de pistón sino N1 de turbina.
+# Addresses, sizes and SimVars verified against
+# "FSUIPC7 Offsets Status.pdf" v0.8.4 for MSFS 2024. The real SimVar goes in
+# the comment because several FSX-era offsets now point at something other than
+# what their historical name suggests: 0x08A0 is not manifold pressure but fuel
+# flow, 0x08B8 is not EGT but oil temperature, and 0x0898 is not piston RPM but
+# turbine N1.
 READ_SIGNALS = {
     # --- Position ---
     "LatitudeDeg":   {"address": 0x0560, "type": "lat",   "size": 8, "sink": ("gps", "latitude")},       # PLANE LATITUDE
@@ -868,44 +870,44 @@ READ_SIGNALS = {
 
     # --- Attitude ---
     "HeadingTrueRaw":{"address": 0x0580, "type": "uint",  "size": 4, "transform": "raw_hdg_to_deg", "sink": ("att", "heading_deg")},      # PLANE HEADING DEGREES TRUE
-    "PitchRaw":      {"address": 0x0578, "type": "int",   "size": 4, "transform": "raw_ang_to_deg_pitch", "sink": ("att", "pitch_deg")},  # PLANE PITCH DEGREES (negativo = morro arriba)
-    "BankRaw":       {"address": 0x057C, "type": "int",   "size": 4, "transform": "raw_ang_to_deg_roll", "sink": ("att", "roll_deg")},    # PLANE BANK DEGREES (positivo = alabeo a izquierda)
+    "PitchRaw":      {"address": 0x0578, "type": "int",   "size": 4, "transform": "raw_ang_to_deg_pitch", "sink": ("att", "pitch_deg")},  # PLANE PITCH DEGREES (negative = nose up)
+    "BankRaw":       {"address": 0x057C, "type": "int",   "size": 4, "transform": "raw_ang_to_deg_roll", "sink": ("att", "roll_deg")},    # PLANE BANK DEGREES (positive = roll to the left)
 
     # --- Magnetic variation ---
     "MagVar_U32": {"address": 0x02A0, "type": "uint", "size": 2, "transform": "u32_signed16_to_magdeg", "sink": ("att", "mag_var_deg")},  # MAGVAR, int16
 
-    # --- Luces (bitmask de 2 bytes) ---
+    # --- Lights (2-byte bitmask) ---
     "LIGHTS_BITS32": {"address": 0x0D0C, "type": "uint", "size": 2, "sink": None},  # LIGHT NAV/BEACON/LANDING/TAXI/STROBE/...
 
-    # --- Sistemas ---
+    # --- Systems ---
     "BATTERY_MAIN":   {"address": 0x281C, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("systems", "battery_main_on")},  # ELECTRICAL MASTER BATTERY
     "PITOT_HEAT_U32": {"address": 0x029C, "type": "uint", "size": 1, "transform": "nonzero_to_bool", "sink": ("systems", "pitot_heat_on")},    # PITOT HEAT
     "PROP_DEICE":     {"address": 0x2440, "type": "uint", "size": 4, "transform": "nonzero_to_bool", "sink": ("systems", "prop_heat_on")},     # PROP DEICE SWITCH:1
 
     # --- BARO ---
-    # 0x0330 es el altímetro 1 y es el que corresponde por defecto; 0x0332 es
-    # el segundo altímetro (paneles con dos, tipo G1000) y sólo se usa como
-    # respaldo. La preferencia se resuelve en _derive_environment().
+    # 0x0330 is altimeter 1 and is the one that applies by default; 0x0332 is
+    # the second altimeter (dual-altimeter panels, G1000 style) and is only
+    # used as a fallback. The preference is resolved in _derive_environment().
     "BARO_0330_U32": {"address": 0x0330, "type": "uint", "size": 2, "transform": "u32_baro_to_inhg", "sink": None},  # KOHLSMAN SETTING MB, mb*16
     "BARO_0332_U32": {"address": 0x0332, "type": "uint", "size": 2, "transform": "u32_baro_to_inhg", "sink": None},  # KOHLSMAN SETTING MB:2
 
-    # --- Freno de estacionamiento ---
-    # El schema de Shirley no tiene un campo para los pedales de freno, así que
-    # 0x0BC4/0x0BC6 ya no se declaran: sólo agregaban tráfico.
+    # --- Parking brake ---
+    # Shirley's schema has no field for the brake pedals, so 0x0BC4/0x0BC6 are
+    # no longer declared: they only added traffic.
     "parkingBrakeU": {"address": 0x0BC8, "type": "uint", "size": 2, "transform": "u32_to_bool_parking", "sink": ("systems", "parking_brake_on")},  # BRAKE PARKING POSITION, 0/32767
 
-    # --- Controles (flaps/gear en %) ---
+    # --- Controls (flaps/gear in %) ---
     "flapsHandle":   {"address": 0x0BDC, "type": "uint", "size": 4, "transform": "u32_to_pct_16383", "sink": ("levers", "flaps_pct")},  # FLAPS HANDLE PERCENT
     "gearHandle":    {"address": 0x0BE8, "type": "uint", "size": 4, "transform": "u32_to_pct_16383", "sink": ("levers", "gear_pct")},   # GEAR HANDLE POSITION
 
-    # Auxiliares del write path: permiten traducir un porcentaje de flaps al
-    # índice de detente del avión en vuelo (ver _encode_flaps).
+    # Write-path helpers: they allow a flaps percentage to be translated into
+    # the detent index of the aircraft in flight (see _encode_flaps).
     "FLAPS_INDEX":     {"address": 0x0BFC, "type": "uint", "size": 1, "sink": None},  # FLAPS HANDLE INDEX
-    "FLAPS_NUM_POS":   {"address": 0x3BF8, "type": "uint", "size": 2, "sink": None},  # FLAPS NUM HANDLE POSITIONS (sin contar recogido)
-    "FLAPS_DETENT_INC":{"address": 0x3BFA, "type": "uint", "size": 2, "sink": None},  # incremento de 0x0BDC por detente
+    "FLAPS_NUM_POS":   {"address": 0x3BF8, "type": "uint", "size": 2, "sink": None},  # FLAPS NUM HANDLE POSITIONS (not counting up)
+    "FLAPS_DETENT_INC":{"address": 0x3BFA, "type": "uint", "size": 2, "sink": None},  # 0x0BDC increment per detent
     "LL_FREEZE":       {"address": 0x3540, "type": "uint", "size": 1, "sink": None},  # IS LATITUDE LONGITUDE FREEZE ON
 
-    # --- Nombre aeronave ---
+    # --- Aircraft name ---
     "aircraftNameStr": {"address": 0x3D00, "type": "string", "size": 256, "sink": ("simulation", "aircraft_name")},  # TITLE
 
     # === RADIOS/NAVIGATION ===
@@ -918,9 +920,9 @@ READ_SIGNALS = {
     "TRANSPONDER":    {"address": 0x0354, "type": "uint", "size": 2, "transform": "bcd_to_xpdr_official", "sink": ("radios", "transponder_code")},
 
     # === INDICATORS ===
-    # No hay RPM de pistón utilizable por offset legacy en MSFS 2024: 0x0898 y
-    # 0x0930 son N1 de turbina, y 0x089C/0x0934 no están documentados. Para un
-    # avión de pistón hay que mapear GENERAL ENG RPM:n con MyOffsets.
+    # There is no usable piston RPM through legacy offsets in MSFS 2024:
+    # 0x0898 and 0x0930 are turbine N1, and 0x089C/0x0934 are undocumented. For
+    # a piston aircraft, map GENERAL ENG RPM:n with MyOffsets.
     "ENGINE1_N1":     {"address": 0x2010, "type": "float", "size": 8, "sink": ("indicators", "engine1_n1_pct")},  # TURB ENG CORRECTED N1:1, %
     "ENGINE2_N1":     {"address": 0x2110, "type": "float", "size": 8, "sink": ("indicators", "engine2_n1_pct")},  # TURB ENG CORRECTED N1:2, %
     "ENGINE1_MANIFOLD": {"address": 0x08C0, "type": "uint", "size": 2, "transform": "manifold_to_inhg", "sink": ("indicators", "engine1_manifold_inhg")},  # RECIP ENG MANIFOLD PRESSURE:1, inHg*1024
@@ -936,7 +938,7 @@ READ_SIGNALS = {
     "PROP2_POS":      {"address": 0x0926, "type": "int", "size": 2, "transform": "prop_to_percent", "sink": ("levers", "prop2_pct")},          # ...:2
     "MIXTURE1_POS":   {"address": 0x0890, "type": "int", "size": 2, "transform": "mixture_to_percent", "sink": ("levers", "mixture1_pct")},    # GENERAL ENG MIXTURE LEVER POSITION:1, 0..16384
     "MIXTURE2_POS":   {"address": 0x0928, "type": "int", "size": 2, "transform": "mixture_to_percent", "sink": ("levers", "mixture2_pct")},    # ...:2
-    "CARB_HEAT1":     {"address": 0x08B2, "type": "uint", "size": 2, "transform": "carb_heat_to_percent", "sink": ("levers", "carb_heat1_pct")},  # GENERAL ENG ANTI ICE POSITION:1 (binario en MSFS 2024)
+    "CARB_HEAT1":     {"address": 0x08B2, "type": "uint", "size": 2, "transform": "carb_heat_to_percent", "sink": ("levers", "carb_heat1_pct")},  # GENERAL ENG ANTI ICE POSITION:1 (binary in MSFS 2024)
     "SPEEDBRAKE_POS": {"address": 0x0BD0, "type": "uint", "size": 4, "transform": "u32_to_pct_16383", "sink": ("levers", "speedbrake_pct")},   # SPOILERS HANDLE POSITION
 
     # === AUTOPILOT ===
@@ -956,7 +958,7 @@ READ_SIGNALS = {
     "OUTSIDE_TEMP":   {"address": 0x0E8C, "type": "int", "size": 2, "transform": "temp_to_celsius", "sink": ("environment", "outside_temp_c")},# AMBIENT TEMPERATURE, °C*256
 }
 
-# Normaliza: si alguna señal no define 'sink', déjalo en None
+# Normalise: if a signal does not define 'sink', leave it as None
 for _k, _cfg in READ_SIGNALS.items():
     _cfg.setdefault("sink", None)
 
@@ -965,14 +967,14 @@ def raw_ang_to_deg(raw):
     return fs_angle_deg(raw) if raw is not None else None
 
 def raw_ang_to_deg_pitch(raw):
-    # FSUIPC da el cabeceo positivo hacia abajo; Shirley lo quiere positivo
-    # hacia arriba (pitchAngleDegUp).
+    # FSUIPC reports pitch positive nose-down; Shirley wants it positive
+    # nose-up (pitchAngleDegUp).
     v = fs_angle_deg(raw) if raw is not None else None
     return -v if v is not None else None
 
 def raw_ang_to_deg_roll(raw):
-    # FSUIPC da el alabeo positivo hacia la izquierda; Shirley lo quiere
-    # positivo hacia la derecha (rollAngleDegRight).
+    # FSUIPC reports bank positive to the left; Shirley wants it positive to
+    # the right (rollAngleDegRight).
     v = fs_angle_deg(raw) if raw is not None else None
     return -v if v is not None else None
 
@@ -1126,7 +1128,7 @@ def u32_to_pct_16383(u):
 def u32_to_bool_parking(u):
     v = lower16(u)
     if v is None: return None
-    return v >= PARKING_BRAKE_THRESHOLD   # tolerante (0/32767 típico)
+    return v >= PARKING_BRAKE_THRESHOLD   # tolerant (0/32767 typical)
 
 def u32_signed16_to_magdeg(u):
     v = lower16(u)
@@ -1136,14 +1138,14 @@ def u32_signed16_to_magdeg(u):
 
 def gs_u32_to_kts(raw):
     try:
-        # 0x02B4 = ground speed en (m/s) * 65536
+        # 0x02B4 = ground speed in (m/s) * 65536
         return (float(raw) / FSUIPC_SCALE_FACTOR_65536) * MPS_TO_KTS  # m/s → kts
     except (TypeError, ValueError, ZeroDivisionError) as e:
         if DEBUG_FSUIPC_MESSAGES:
             logger.debug(f"Transform gs_u32_to_kts failed for {raw}: {e}")
         return None
 
-# ===================== NUEVAS TRANSFORMACIONES PARA SCHEMA =====================
+# ===================== NEW SCHEMA TRANSFORMS =====================
 
 def bcd_to_freq_com(raw):
     """Convert BCD COM frequency correctly"""
@@ -1334,15 +1336,15 @@ def bcd_to_freq_com_simple(raw):
         if DEBUG_FSUIPC_MESSAGES:
             logger.debug(f"COM_SIMPLE: Raw value: {val}")
 
-        # Si el valor parece razonable, usarlo directamente
+        # If the value looks reasonable, use it directly
         if 118000 <= val <= 136975:
             return val
 
-        # Si está en MHz*1000 format
+        # If it is in MHz*1000 format
         if 118 <= val <= 137:
             return val * 1000
 
-        # Si es un valor BCD simple, convertir dígito por dígito
+        # If it is a simple BCD value, convert digit by digit
         if val > 0:
             # Extract as string and reinterpret
             str_val = f"{val:08d}"
@@ -1402,7 +1404,7 @@ def bcd_to_xpdr(raw):
         return 1200  # Default squawk code
 
 def manifold_to_inhg(raw):
-    """0x08C0 RECIP ENG MANIFOLD PRESSURE: pulgadas de mercurio * 1024."""
+    """0x08C0 RECIP ENG MANIFOLD PRESSURE: inches of mercury * 1024."""
     try:
         return float(raw) / 1024.0
     except (TypeError, ValueError, ZeroDivisionError) as e:
@@ -1413,7 +1415,7 @@ def manifold_to_inhg(raw):
 def egt_to_celsius(raw):
     """0x08BE GENERAL ENG EXHAUST GAS TEMPERATURE: 16384 = 860 °C.
 
-    No es Rankine ni Kelvin: es una escala lineal directa a grados Celsius.
+    It is neither Rankine nor Kelvin: it is a linear scale straight to Celsius.
     """
     try:
         return float(raw) * 860.0 / 16384.0
@@ -1423,12 +1425,12 @@ def egt_to_celsius(raw):
         return None
 
 def temp_to_celsius(raw):
-    """0x0E8C AMBIENT TEMPERATURE: grados Celsius * 256, con signo.
+    """0x0E8C AMBIENT TEMPERATURE: degrees Celsius * 256, signed.
 
-    No es Kelvin*256 — esa escala ni siquiera entra en el int16 declarado.
-    Fuera de rango devuelve None para que el campo se omita del snapshot; antes
-    devolvía 15.0, con lo cual el puente publicaba una temperatura inventada
-    como si fuera telemetría.
+    It is not Kelvin*256 — that scale does not even fit the declared int16.
+    Out of range it returns None so the field is omitted from the snapshot; it
+    used to return 15.0, which had the bridge publishing a made-up temperature
+    as if it were telemetry.
     """
     try:
         celsius = float(raw) / FSUIPC_SCALE_FACTOR_256
@@ -1462,11 +1464,11 @@ def oil_pressure_to_psi(raw):
         return None
 
 def _lever_to_percent(raw, lo_pct, name):
-    """Palancas FSUIPC: 16384 = 100 %. El signo se respeta.
+    """FSUIPC levers: 16384 = 100 %. The sign is preserved.
 
-    Las palancas de gases y paso de hélice llegan hasta -4096 (reversa / beta),
-    que es -25 %. Sumarles 65536 para 'arreglar el signo' convertía la reversa
-    en ~300 % de potencia, que es lo que hacía la versión anterior.
+    The throttle and propeller levers go down to -4096 (reverse / beta), which
+    is -25 %. Adding 65536 to them to 'fix the sign' turned reverse into ~300 %
+    power, which is what the previous version did.
     """
     try:
         pct = (int(raw) / float(FSUIPC_THROTTLE_MAX)) * 100.0
@@ -1489,11 +1491,10 @@ def prop_to_percent(raw):
     return _lever_to_percent(raw, -25.0, "prop_to_percent")
 
 def carb_heat_to_percent(raw):
-    """0x08B2 GENERAL ENG ANTI ICE POSITION: binario en MSFS 2024.
+    """0x08B2 GENERAL ENG ANTI ICE POSITION: binary in MSFS 2024.
 
-    El schema de Shirley lo tipa como porcentaje, pero MSFS 2024 modela el aire
-    caliente al carburador como el interruptor de antihielo del motor, que sólo
-    vale 0 o 1.
+    Shirley's schema types it as a percentage, but MSFS 2024 models carburetor
+    heat as the engine anti-ice switch, which is only ever 0 or 1.
     """
     try:
         return 100.0 if int(raw) else 0.0
@@ -1503,7 +1504,7 @@ def carb_heat_to_percent(raw):
         return None
 
 def heading_bug_to_deg(raw):
-    """0x07CC AUTOPILOT HEADING LOCK DIR: grados * 65536 / 360."""
+    """0x07CC AUTOPILOT HEADING LOCK DIR: degrees * 65536 / 360."""
     try:
         return ((float(raw) * FSUIPC_TURN_FRACTION_TO_DEG) / FSUIPC_SCALE_FACTOR_65536) % 360.0
     except (TypeError, ValueError, ZeroDivisionError) as e:
@@ -1512,10 +1513,10 @@ def heading_bug_to_deg(raw):
         return None
 
 def alt_bug_to_feet(raw):
-    """0x07D4 AUTOPILOT ALTITUDE LOCK VAR: metros * 65536, no pies.
+    """0x07D4 AUTOPILOT ALTITUDE LOCK VAR: metres * 65536, not feet.
 
-    Se leía en crudo, así que el selector de altitud del piloto automático se
-    publicaba con un valor 65536/3.28 veces mayor que el real.
+    It used to be read raw, so the autopilot altitude preselector was published
+    with a value 65536/3.28 times larger than the real one.
     """
     try:
         return (float(raw) / FSUIPC_SCALE_FACTOR_65536) * METERS_TO_FEET
@@ -1600,10 +1601,10 @@ TRANSFORMS.update({
 })
 
 # ===================== SINK TO SHIRLEY MAPPINGS =====================
-# Los dos diccionarios que siguen son documentación, no configuración: nada los
-# lee. Los campos de gps y att necesitan cálculos derivados (AGL a partir de la
-# altitud del terreno, rumbo magnético a partir de la declinación, derrota a
-# partir de posiciones sucesivas) y por eso get_snapshot() los arma a mano.
+# The two dictionaries below are documentation, not configuration: nothing
+# reads them. The gps and att fields need derived calculations (AGL from the
+# ground altitude, magnetic heading from magnetic variation, ground track from
+# successive positions), which is why get_snapshot() builds them by hand.
 _GPS_SINK_TO_SHIRLEY = {
     "latitude":           "position.latitudeDeg",
     "longitude":          "position.longitudeDeg",
@@ -1624,17 +1625,18 @@ _ATT_SINK_TO_SHIRLEY = {
     "mag_var_deg": None,
 }
 
-# ===================== Mapping sinks -> claves de Shirley =====================
-# (grupo interno, campo) -> (ruta en el schema de Shirley, tipo)
+# ===================== Mapping sinks -> Shirley keys =====================
+# (internal group, field) -> (path in Shirley's schema, type)
 #
-# El tipo va explícito a propósito. La versión anterior lo deducía buscando
-# "deg"/"ft"/"fpm" como subcadena del nombre del campo; la prueba distinguía
-# mayúsculas y los nombres del schema son camelCase, así que nunca acertaba y
-# los selectores numéricos del piloto automático terminaban convertidos a bool
-# y publicados como 1.0.
+# The type is explicit on purpose. The previous version deduced it by looking
+# for "deg"/"ft"/"fpm" as a substring of the field name; the test was
+# case-sensitive and the schema names are camelCase, so it never matched and
+# the autopilot's numeric selectors ended up coerced to bool and published as
+# 1.0.
 #
-# Los grupos "gps" y "att" no aparecen acá: sus campos necesitan cálculos
-# derivados (AGL, rumbo magnético, derrota) y se arman a mano en get_snapshot().
+# The "gps" and "att" groups do not appear here: their fields need derived
+# calculations (AGL, magnetic heading, ground track) and are built by hand in
+# get_snapshot().
 SINK_TO_SHIRLEY = {
     # --- lights ---
     ("lights", "nav_on"):            ("lights.navigationLightsSwitchOn", "bool"),
@@ -1649,8 +1651,8 @@ SINK_TO_SHIRLEY = {
     ("systems", "prop_heat_on"):     ("systems.propHeatSwitchOn", "bool"),
 
     # --- autopilot ---
-    # alt_hold_on y vs_hold_on no se mapean directamente: alimentan el enum
-    # altitudeMode, que se resuelve en get_snapshot().
+    # alt_hold_on and vs_hold_on are not mapped directly: they feed the
+    # altitudeMode enum, which is resolved in get_snapshot().
     ("autopilot", "master_on"):           ("autopilot.isAutopilotEngaged", "bool"),
     ("autopilot", "hdg_select_on"):       ("autopilot.isHeadingSelectEnabled", "bool"),
     ("autopilot", "flight_director_on"):  ("autopilot.isFlightDirectorEngaged", "bool"),
@@ -1700,9 +1702,9 @@ SINK_TO_SHIRLEY = {
     ("simulation", "aircraft_name"): ("simulation.aircraftName", "str"),
 }
 
-# Campos que se leen pero no se publican. Un campo que Shirley no reconoce
-# invalida el grupo entero, así que es preferible omitirlo antes que perder el
-# grupo completo por su culpa.
+# Fields that are read but not published. A field Shirley does not recognise
+# invalidates the whole group, so it is better to omit it than to lose the
+# entire group because of it.
 SUPPRESSED_PATHS = frozenset() if PUBLISH_RADIO_FREQUENCIES else frozenset({
     "radiosNavigation.frequencyHz.com1",
     "radiosNavigation.frequencyHz.com2",
@@ -1720,12 +1722,12 @@ _SINK_COERCERS = {
 }
 
 def _assign_path(out: Dict[str, Any], path: str, value: Any, kind: str) -> None:
-    """Deposita value en out siguiendo una ruta con puntos, coercionando el tipo.
+    """Store value in out following a dotted path, coercing the type.
 
-    Si el valor no se puede convertir al tipo declarado se descarta: es
-    preferible omitir un campo a mandarle a Shirley uno con el tipo equivocado,
-    porque cada grupo del schema es .strict() y un solo campo mal tipado
-    invalida el grupo entero.
+    If the value cannot be converted to the declared type it is dropped: it is
+    better to omit a field than to send Shirley one with the wrong type,
+    because every schema group is .strict() and a single mistyped field
+    invalidates the whole group.
     """
     coerce = _SINK_COERCERS.get(kind, float)
     try:
@@ -1737,7 +1739,7 @@ def _assign_path(out: Dict[str, Any], path: str, value: Any, kind: str) -> None:
 
     parts = path.split(".")
     node = out
-    for part in parts[:-1]:       # crea el grupo y los objetos intermedios
+    for part in parts[:-1]:       # creates the group and the intermediate objects
         node = node.setdefault(part, {})
     node[parts[-1]] = typed
 
@@ -1808,15 +1810,15 @@ class SimData:
         self._last_lon = None
         self._track_deg = None
 
-        # Grupos de datos. Las claves de cada uno son los 'sink field' de
-        # READ_SIGNALS; SINK_TO_SHIRLEY las traduce a rutas del schema.
+        # Data groups. The keys of each one are the READ_SIGNALS 'sink
+        # field'; SINK_TO_SHIRLEY translates them into schema paths.
         self._lights_data = {}      # nav_on, landing_on, taxi_on, strobe_on
         self._systems_data = {}     # pitot_heat_on, battery_main_on, parking_brake_on, prop_heat_on
         self._autopilot_data = {}   # master_on, hdg_select_on, hdg_bug_deg, alt_bug_ft, vs_target_fpm...
         self._levers_data = {}      # flaps_pct, gear_pct, throttle1_pct, mixture1_pct...
         self._indicators_data = {}  # altimeter_inhg, stall_warning_on, engine1_n1_pct...
         self._environment_data = {} # pressure_inhg, wind_speed_kts, outside_temp_c...
-        self._radios_data = {}      # frecuencias COM/NAV, transponder
+        self._radios_data = {}      # COM/NAV frequencies, transponder
         self._simulation_data = {}  # aircraft_name
 
     async def update_from_xgps(self, xgps: XGPSData):
@@ -2022,10 +2024,10 @@ class SimData:
             elif DEBUG_FSUIPC_MESSAGES:
                 logger.debug("Snapshot sin grupo attitude")
 
-            # Resto de los grupos: una sola pasada sobre SINK_TO_SHIRLEY, con el
-            # tipo declarado en la tabla. Antes había dos pasadas sobre dos
-            # diccionarios homónimos, la segunda de las cuales deshacía la
-            # primera.
+            # The remaining groups: a single pass over SINK_TO_SHIRLEY, using
+            # the type declared in the table. There used to be two passes over
+            # two identically named dictionaries, the second of which undid the
+            # first.
             sources = {
                 "lights":      self._lights_data,
                 "systems":     self._systems_data,
@@ -2044,9 +2046,10 @@ class SimData:
                     continue
                 _assign_path(out, path, data[field], kind)
 
-            # altitudeMode es un enum y sale de dos banderas distintas. Sólo se
-            # publica si hay dato real de al menos una: mandar "disabled" sin
-            # haber leído nada afirma algo que no se sabe.
+            # altitudeMode is an enum built from two separate flags. It is
+            # only published when there is real data for at least one of them:
+            # sending "disabled" without having read anything asserts something
+            # unknown.
             alt_hold = self._autopilot_data.get("alt_hold_on")
             vs_hold = self._autopilot_data.get("vs_hold_on")
             if alt_hold is not None or vs_hold is not None:
@@ -2058,7 +2061,7 @@ class SimData:
                     mode = "disabled"
                 out.setdefault("autopilot", {})["altitudeMode"] = mode
 
-            # Validar datos críticos antes de enviar
+            # Validate critical data before sending
             if pos.get("latitudeDeg") is not None:
                 if not validate_position_data(pos.get("latitudeDeg"), pos.get("longitudeDeg"), pos.get("mslAltitudeFt")):
                     logger.warning(f"Invalid position data detected: lat={pos.get('latitudeDeg')}, lon={pos.get('longitudeDeg')}")
@@ -2076,8 +2079,8 @@ class SimData:
             return out
 
     async def get_sink(self, group: str, field: str) -> Any:
-        """Último valor conocido de un sink. Lo usa el write path para que los
-        eventos que sólo conmutan (batería, director de vuelo) sean idempotentes."""
+        """Last known value of a sink. Used by the write path so that events
+        that only toggle (battery, flight director) stay idempotent."""
         async with self._lock:
             source = {
                 "lights": self._lights_data,
@@ -2122,32 +2125,32 @@ class SimData:
 # ===================== FSUIPC WEBSOCKET CLIENT =====================
 class FSUIPCWSClient:
     """
-    Cliente WebSocket contra el FSUIPC WebSocket Server.
+    WebSocket client against the FSUIPC WebSocket Server.
 
-    Declara el grupo de offsets, se suscribe a lecturas periódicas, transforma
-    lo que llega y lo deposita en SimData. Es también el lado que escribe:
-    eventos de control por vars.calc y, para los pocos offsets verificados,
-    offsets.write.
+    Declares the offset group, subscribes to periodic reads, transforms what
+    arrives and deposits it into SimData. It is also the writing side: control
+    events through vars.calc and, for the few verified offsets, offsets.write.
     """
-    # El servidor corta conexiones de forma intermitente y sin trama de cierre:
-    # un comando se queda sin respuesta y el socket resulta estar cerrado. La
-    # reconexión con re-declaración y re-suscripción no es un refinamiento,
-    # es un requisito.
+    # The server drops connections intermittently and without a close frame: a
+    # command goes unanswered and the socket turns out to be closed.
+    # Reconnecting with re-declaration and re-subscription is not a refinement,
+    # it is a requirement.
     RECONNECT_BACKOFF_MIN_S = 1.0
     RECONNECT_BACKOFF_MAX_S = 15.0
     CALC_TIMEOUT_S = 3.0
     WRITE_ERROR_WINDOW_S = 0.8
 
-    # Una suscripción puede morir sin que se caiga la conexión. El caso normal
-    # es arrancar el puente antes de cargar el vuelo: offsets.read se rechaza
-    # con NoFlightSim y el servidor no la reanuda solo cuando el simulador
-    # aparece. El socket queda abierto y sano, y sin vigilancia el puente se
-    # queda callado para siempre sobre una conexión que funciona.
+    # A subscription can die without the connection going down. The usual
+    # case is starting the bridge before loading the flight: offsets.read is
+    # rejected with NoFlightSim and the server does not resume it on its own
+    # once the simulator shows up. The socket stays open and healthy, and
+    # without a watchdog the bridge goes quiet forever over a working
+    # connection.
     DATA_STALL_S = 8.0
     WATCHDOG_PERIOD_S = 4.0
 
-    # El preselector de altitud se mueve de a 1000 ft por evento, así que ir de
-    # 0 a 50 000 ft son 50 pasos más el ajuste fino de a 100.
+    # The altitude preselector moves 1000 ft per event, so going from 0 to
+    # 50,000 ft takes 50 steps plus the fine 100 ft adjustment.
     ALT_BUG_MAX_STEPS = 70
     ALT_BUG_TOLERANCE_FT = 60.0
 
@@ -2157,27 +2160,27 @@ class FSUIPCWSClient:
         self.ws: Optional[Any] = None  # WebSocket client connection
         self.last_data_received_time: Optional[float] = None
 
-        # Último valor crudo de cada señal declarada. FSUIPC responde sólo con
-        # lo que cambió desde la respuesta anterior, así que todo lo que
-        # necesite el cuadro completo — los detentes de flaps, la preferencia
-        # entre los dos altímetros — tiene que leerse de acá y no del payload
-        # suelto que acaba de llegar.
+        # Last raw value of every declared signal. FSUIPC only answers with
+        # what changed since the previous response, so anything that needs the
+        # full picture — the flap detents, the preference between the two
+        # altimeters — has to be read from here and not from the loose payload
+        # that just arrived.
         self.raw_state: Dict[str, Any] = {}
 
-        # Futuros esperando la respuesta a un comando, indexados por
+        # Futures waiting for the response to a command, indexed by
         # (command, name).
         self._waiters: Dict[tuple, list] = {}
 
-        # Serializa las escrituras: puede haber más de un cliente de Shirley
-        # conectado, y una trama WebSocket a medio enviar no se puede
-        # intercalar con otra.
+        # Serialises writes: there can be more than one Shirley client
+        # connected, and a half-sent WebSocket frame cannot be interleaved with
+        # another one.
         self._write_lock = asyncio.Lock()
 
     @property
     def connected(self) -> bool:
         return self.ws is not None
 
-    # ---------- ciclo de conexión ----------
+    # ---------- connection cycle ----------
 
     async def run(self):
         backoff = self.RECONNECT_BACKOFF_MIN_S
@@ -2223,9 +2226,9 @@ class FSUIPCWSClient:
             backoff = min(backoff * 2, self.RECONNECT_BACKOFF_MAX_S)
 
     async def _declare_and_subscribe(self, ws, quiet: bool = False):
-        """Declara el grupo y arranca la suscripción. Se repite en cada
-        reconexión — el servidor no recuerda nada de la sesión anterior — y
-        también cuando el vigía detecta que dejaron de llegar datos."""
+        """Declare the group and start the subscription. Repeated on every
+        reconnection — the server remembers nothing of the previous session —
+        and also when the watchdog notices data stopped arriving."""
         declare_msg = {
             "command": "offsets.declare",
             "name": FSUIPC_GROUP,
@@ -2248,13 +2251,12 @@ class FSUIPCWSClient:
             f"reading every {read_msg['interval']} ms")
 
     async def _watch_data_flow(self, ws):
-        """Rehace la suscripción mientras no lleguen datos.
+        """Re-issue the subscription for as long as no data arrives.
 
-        Una suscripción rechazada no se reanuda sola. El caso corriente es
-        arrancar el puente antes de cargar el vuelo: FSUIPC contesta un único
-        NoFlightSim y después se queda callado, con el socket abierto y en
-        perfecto estado, así que ni el bucle de lectura ni la reconexión se
-        enteran de nada.
+        A rejected subscription does not resume on its own. The common case is
+        starting the bridge before loading the flight: FSUIPC answers a single
+        NoFlightSim and then goes quiet, with the socket open and in perfect
+        shape, so neither the read loop nor the reconnection notices anything.
         """
         started = time.time()
         complained = False
@@ -2283,7 +2285,7 @@ class FSUIPCWSClient:
                 logger.error(f"No se pudo rehacer la suscripción: {e!r}")
                 return
 
-    # ---------- correlación de respuestas ----------
+    # ---------- response correlation ----------
 
     def _resolve_waiter(self, data: dict):
         key = (data.get("command"), data.get("name"))
@@ -2314,7 +2316,7 @@ class FSUIPCWSClient:
                 if not pending:
                     self._waiters.pop(key, None)
 
-    # ---------- lectura ----------
+    # ---------- reading ----------
 
     async def _handle_incoming(self, msg: str):
         global FIRST_PAYLOAD
@@ -2329,10 +2331,9 @@ class FSUIPCWSClient:
             logger.debug(f"FSUIPC received: {data}")
             FIRST_PAYLOAD = False
 
-        # Respuesta a un comando: despierta a quien la esté esperando. Una
-        # escritura correcta responde con un offsets.read, así que sigue de
-        # largo hacia el parseo de datos; sólo las respuestas sin datos
-        # terminan acá.
+        # Response to a command: wake up whoever is waiting for it. A
+        # successful write answers with an offsets.read, so it carries on to
+        # the data parsing; only responses without data end here.
         if "command" in data and "success" in data:
             self._resolve_waiter(data)
             if not any(k in data for k in ("data", "values", "offsets")):
@@ -2345,7 +2346,7 @@ class FSUIPCWSClient:
 
         payload = data.get("data") or data.get("values") or data
 
-        # Algunas versiones devuelven 'values' como lista de {name, value}
+        # Some versions return 'values' as a list of {name, value}
         if isinstance(payload, list):
             try:
                 payload = {it["name"]: it.get("value") for it in payload if isinstance(it, dict) and "name" in it}
@@ -2361,12 +2362,12 @@ class FSUIPCWSClient:
         self.last_data_received_time = time.time()
 
     def _decode(self, payload: dict) -> Dict[str, Dict[str, Any]]:
-        """Payload crudo -> {grupo interno: {campo: valor}}.
+        """Raw payload -> {internal group: {field: value}}.
 
-        Una sola pasada sobre READ_SIGNALS. La versión anterior tenía dos
-        caminos de parseo en paralelo, uno a mano y otro genérico, sincronizados
-        por una lista de exclusión escrita a mano: agregar una señal sin tocar
-        esa lista la procesaba dos veces.
+        A single pass over READ_SIGNALS. The previous version had two parsing
+        paths running in parallel, one hand-written and one generic, kept in
+        sync by a hand-written exclusion list: adding a signal without touching
+        that list processed it twice.
         """
         groups: Dict[str, Dict[str, Any]] = {}
         for key, cfg in READ_SIGNALS.items():
@@ -2394,8 +2395,8 @@ class FSUIPCWSClient:
         return groups
 
     def _derive(self, payload: dict, groups: Dict[str, Dict[str, Any]]) -> None:
-        """Valores que no salen de un offset solo."""
-        # Luces: un único bitmask alimenta cuatro campos.
+        """Values that do not come from a single offset."""
+        # Lights: a single bitmask feeds four fields.
         if "LIGHTS_BITS32" in payload:
             try:
                 bits = int(payload["LIGHTS_BITS32"])
@@ -2409,8 +2410,9 @@ class FSUIPCWSClient:
                     "strobe_on":  bool(bits & (1 << 4)),
                 })
 
-        # Barómetro: 0x0330 es el altímetro 1 y manda; 0x0332 es el segundo y
-        # sólo entra si el primero no da un valor plausible.
+        # Barometer: 0x0330 is altimeter 1 and takes precedence; 0x0332 is
+        # the second one and only steps in if the first gives no plausible
+        # value.
         if "BARO_0330_U32" in payload or "BARO_0332_U32" in payload:
             baro = u32_baro_to_inhg(self.raw_state.get("BARO_0330_U32"))
             if baro is None or not validate_pressure(baro):
@@ -2421,11 +2423,11 @@ class FSUIPCWSClient:
                 groups.setdefault("indicators", {})["altimeter_inhg"] = baro
 
     async def _apply(self, groups: Dict[str, Dict[str, Any]]) -> None:
-        """Vuelca los grupos decodificados en SimData.
+        """Dump the decoded groups into SimData.
 
-        Se hace con await y no con create_task: los create_task sueltos no
-        guardaban referencia, se podían recolectar a mitad de camino y no
-        garantizaban ningún orden entre sí.
+        Done with await rather than create_task: the loose create_tasks kept no
+        reference, could be garbage collected halfway through and guaranteed no
+        ordering between themselves.
         """
         dispatch = {
             "gps":         self.sim_data.update_gps_partial,
@@ -2447,13 +2449,13 @@ class FSUIPCWSClient:
             if kwargs:
                 await update(**kwargs)
 
-    # ---------- primitivas de escritura ----------
+    # ---------- write primitives ----------
 
     async def calc(self, code: str, tag: str = "set") -> bool:
-        """Ejecuta código de calculadora (RPN) vía vars.calc.
+        """Run calculator (RPN) code through vars.calc.
 
-        Es el camino preferido para escribir: si el simulador no puede honrar
-        el comando no queda nada guardado en el buffer de offsets de FSUIPC.
+        This is the preferred write path: if the simulator cannot honour the
+        command, nothing is left stored in FSUIPC's offset buffer.
         """
         ws = self.ws
         if ws is None:
@@ -2469,8 +2471,8 @@ class FSUIPCWSClient:
 
             reply = await self._await_response("vars.calc", tag, self.CALC_TIMEOUT_S)
         if reply is None:
-            # El síntoma documentado de una conexión caída en silencio. Cerrar
-            # fuerza el ciclo de reconexión en run().
+            # The documented symptom of a silently dropped connection.
+            # Closing forces the reconnection cycle in run().
             logger.error(f"vars.calc '{code}' sin respuesta en {self.CALC_TIMEOUT_S}s; forzando reconexión")
             try:
                 await ws.close()
@@ -2485,15 +2487,15 @@ class FSUIPCWSClient:
         return True
 
     async def write_offset(self, name: str, value: int) -> bool:
-        """Escribe un offset declarado, por nombre.
+        """Write a declared offset, by name.
 
-        offsets.write exige el nombre del grupo y referencia los offsets por
-        nombre, nunca por dirección; la versión anterior mandaba una forma
-        inventada con 'values' y direcciones, que el servidor descarta sin
-        emitir error alguno.
+        offsets.write requires the group name and refers to offsets by name,
+        never by address; the previous version sent a made-up shape with
+        'values' and addresses, which the server discards without raising any
+        error at all.
 
-        Sólo se permiten los offsets de WRITABLE_OFFSETS: escribir uno que el
-        simulador ignora envenena sus lecturas posteriores de forma permanente.
+        Only the offsets in WRITABLE_OFFSETS are allowed: writing one the
+        simulator ignores poisons its later reads permanently.
         """
         if name not in WRITABLE_OFFSETS:
             logger.error(f"Escritura bloqueada sobre '{name}': no está en WRITABLE_OFFSETS")
@@ -2512,8 +2514,8 @@ class FSUIPCWSClient:
                 logger.error(f"offsets.write '{name}' falló al enviar: {e!r}")
                 return False
 
-            # Una escritura correcta responde con un offsets.read; sólo se
-            # recibe una respuesta offsets.write cuando falló.
+            # A successful write answers with an offsets.read; an
+            # offsets.write response only comes back when it failed.
             err = await self._await_response("offsets.write", FSUIPC_GROUP, self.WRITE_ERROR_WINDOW_S)
         if err is not None and not err.get("success"):
             logger.error(f"offsets.write '{name}' rechazado: {err.get('errorCode')}: {err.get('errorMessage')}")
@@ -2525,7 +2527,7 @@ class FSUIPCWSClient:
     # ---------- SetSimData ----------
 
     async def apply_set_simdata(self, body: dict) -> list:
-        """Aplica un mensaje SetSimData completo y devuelve un resultado por campo."""
+        """Apply a full SetSimData message and return one result per field."""
         results = []
         for path, value in _flatten_set_simdata(body):
             results.append(await self.apply_set_field(path, value))
@@ -2546,10 +2548,10 @@ class FSUIPCWSClient:
         if ok:
             return {"field": path, "ok": True}
 
-        # Un fallo tiene que decir por qué. Que el comando no haya llegado al
-        # simulador y que el simulador lo haya rechazado son cosas distintas, y
-        # la primera es transitoria: este servidor corta la conexión cada tanto
-        # sin aviso, y el comando se puede volver a mandar.
+        # A failure has to say why. The command never reaching the simulator
+        # and the simulator rejecting it are different things, and the first is
+        # transient: this server drops the connection every so often without
+        # warning, and the command can simply be sent again.
         reason = ("el comando no llegó al simulador: la conexión con FSUIPC se cortó, "
                   "se puede reintentar" if self.ws is None
                   else "el simulador no aplicó el comando")
@@ -2600,16 +2602,16 @@ class FSUIPCWSClient:
             return self.raw_state.get(field)
         return await self.sim_data.get_sink(group, field)
 
-    # ---------- handlers propios ----------
+    # ---------- custom handlers ----------
 
     async def _set_flaps(self, value) -> bool:
-        """Flaps por índice de detente cuando el avión informa sus detentes.
+        """Flaps by detent index when the aircraft reports its detents.
 
-        MSFS 2024 ajusta el porcentaje a la detente más cercana. En un avión de
-        tres posiciones el ajuste es tan grueso que se traga el comando entero:
-        pedir 10922 cae en 8191, que en un King Air 350i o un CJ4 es justo donde
-        ya estaban los flaps, así que no se movía nada ni había forma de saber
-        por qué. Escribir el índice va derecho a la detente.
+        MSFS 2024 snaps the percentage to the nearest detent. On a three
+        position aircraft that snapping is so coarse it swallows the whole
+        command: asking for 10922 lands on 8191, which on a King Air 350i or a
+        CJ4 is exactly where the flaps already were, so nothing moved and there
+        was no way to tell why. Writing the index goes straight to the detent.
         """
         pct = clamp(float(value), 0.0, 100.0)
         increment = self.raw_state.get("FLAPS_DETENT_INC")
@@ -2632,17 +2634,18 @@ class FSUIPCWSClient:
         return await self.calc(f"{_enc_pct_16383(pct)} (>K:FLAPS_SET)", "setFlaps")
 
     async def _set_altitude_bug(self, value) -> bool:
-        """Lleva el preselector de altitud al valor pedido, convergiendo.
+        """Drive the altitude preselector to the requested value, converging.
 
-        Verificado sobre un C172 G1000 en MSFS 2024: AP_ALT_VAR_SET_ENGLISH no
-        fija el valor que se le manda, mueve el preselector 1000 ft *hacia* él.
-        Mandarle 12000 estando en 5000 deja 6000; mandarle 3000 estando en 6000
-        deja 5000. AP_ALT_VAR_INC/DEC mueven de a 100 ft.
+        Verified on a C172 G1000 in MSFS 2024: AP_ALT_VAR_SET_ENGLISH does not
+        set the value it is given, it moves the preselector 1000 ft *toward*
+        it. Sending 12000 while at 5000 leaves 6000; sending 3000 while at 6000
+        leaves 5000. AP_ALT_VAR_INC/DEC move in 100 ft steps.
 
-        Por eso esto es un lazo y no una sola llamada. En un avión donde el
-        evento sí fije el valor de una, la primera vuelta ya cae dentro de
-        tolerancia y el lazo termina ahí. Si el avión ignora el evento, el
-        guardia de progreso corta a la segunda vuelta en vez de insistir.
+        That is why this is a loop and not a single call. On an aircraft where
+        the event does set the value in one go, the first pass already lands
+        within tolerance and the loop ends there. If the aircraft ignores the
+        event, the progress guard bails out on the second pass instead of
+        insisting.
         """
         target = float(value)
         last = None
@@ -2650,7 +2653,7 @@ class FSUIPCWSClient:
         for _ in range(self.ALT_BUG_MAX_STEPS):
             current = await self.sim_data.get_sink("autopilot", "alt_bug_ft")
             if current is None:
-                # Sin lectura no se puede converger; queda un intento suelto.
+                # Without a reading there is no converging; one lone try.
                 return await self.calc(f"{_enc_int(target)} (>K:AP_ALT_VAR_SET_ENGLISH)", "setAltBug")
 
             delta = target - float(current)
@@ -2680,7 +2683,7 @@ class FSUIPCWSClient:
 
     async def _wait_for_sink_change(self, group: str, field: str, previous: Any,
                                     timeout: float = 1.5) -> bool:
-        """Espera a que una lectura se actualice, en vez de dormir a ciegas."""
+        """Wait for a reading to update, instead of sleeping blindly."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
@@ -2704,7 +2707,7 @@ class FSUIPCWSClient:
                 ok = await self.calc("1 (>K:AP_PANEL_VS_HOLD)", "setVsHold") and ok
             return ok
 
-        # Sin verificar contra el simulador: no se ejercitaron en las pruebas.
+        # Unverified against the simulator: not exercised during testing.
         if mode == "glideSlope":
             return await self.calc("(>K:AP_APR_HOLD)", "setApr")
         if mode == "levelChange":
@@ -2805,16 +2808,15 @@ class ShirleyWebSocketServer:
 
     @staticmethod
     def _as_set_simdata(data: dict) -> Optional[dict]:
-        """Reconoce un SetSimData y devuelve su cuerpo anidado.
+        """Recognise a SetSimData and return its nested body.
 
-        Shirley manda el objeto pelado, con la misma forma anidada que SimData y
-        sin ninguna clave 'type': {"levers": {"flapsHandlePercentDown": 50}}. La
-        versión anterior exigía {"type": "SetSimData", "commands": [...]}, un
-        formato que nadie manda, así que todo mensaje entrante se ignoraba en
-        silencio.
+        Shirley sends the bare object, with the same nested shape as SimData
+        and no 'type' key at all: {"levers": {"flapsHandlePercentDown": 50}}.
+        The previous version required {"type": "SetSimData", "commands": [...]},
+        a format nobody sends, so every incoming message was silently ignored.
 
-        Se sigue aceptando la envoltura con 'type' por si un cliente propio la
-        usa para depurar.
+        The 'type' wrapper is still accepted in case a local client uses it for
+        debugging.
         """
         if data.get("type") == "SetSimData":
             inner = data.get("data")
@@ -2838,7 +2840,7 @@ class ShirleyWebSocketServer:
                     if not snapshot:
                         logger.warning("Empty snapshot detected!")
 
-                # DEBUG: Verificar que no hay keys prohibidas
+                # DEBUG: check there are no forbidden keys
                 if any(key in snapshot for key in ["type", "reads", "writes"]):
                     logger.error(f"Snapshot contains prohibited keys: {list(snapshot.keys())}")
 
