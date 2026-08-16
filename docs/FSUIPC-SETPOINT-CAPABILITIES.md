@@ -30,12 +30,17 @@ Prepared for the Airplane Team. Mapped field-by-field against
 >
 > **Third revision.** Everything here was re-exercised end to end through the bridge itself
 > ([`tools/verify_bridge_live.py`](../tools/verify_bridge_live.py)), rather than against offsets
-> in isolation: 17 of 18 fields applied, the eighteenth being spoilers on an aircraft that has
-> none. Two claims were corrected. The altitude bug is not settable by the event either — it
-> steps toward the target, and the earlier advice to "use the event" produced a bridge that
-> silently moved the bug 1000 ft and reported success. And a subscription rejected with
-> `NoFlightSim` is never resumed, which matters because starting a bridge before loading the
-> flight is the normal order of operations.
+> in isolation, on a C172SP G1000 and a King Air 350i. Two claims were corrected. The altitude bug
+> is not settable by the event either — it steps toward the target, and the earlier advice to "use
+> the event" produced a bridge that silently moved the bug 1000 ft and reported success. And a
+> subscription rejected with `NoFlightSim` is never resumed, which matters because starting a
+> bridge before loading the flight is the normal order of operations.
+>
+> The revision also caught a false pass of its own making, which is worth stating plainly: prop
+> de-ice is written and read at the same offset, so the first harness watched the field it had
+> just written and duly reported success on a C172 — an aircraft with no prop de-ice. It had
+> reproduced the echo trap described below while trying to test for it. Witness offsets the
+> bridge never writes are now used wherever the written offset is also the readable one.
 
 ## Summary
 
@@ -163,7 +168,7 @@ verified · ✗ echo: accepted but proven not applied · ✕ rejected outright �
 | `flapsHandlePercentDown` | ✅ `0x0BDC` | ⚡ `FLAPS_SET` | `0…16383`, snapped to the aircraft's detents. On coarse-detent aircraft prefer the index — see below. |
 | — *(detent index)* | ✅ `0x0BFC` | — | Addresses detents directly, one byte, `0`-based. The reliable path on aircraft with few positions. |
 | `speedBrakesHandlePercentDeployed` | ✅ `0x0BD0` | ⚡ `SPOILERS_SET` | Verified on a CJ4, both ways. Full deflection normalises to **16384**, not 16383. |
-| `landingGearHandlePercentDown` | ✅ `0x0BE8` | ⚡ `GEAR_SET` | Verified airborne on a CJ4, both ways. On the ground the sim refuses to retract and both paths look dead. |
+| `landingGearHandlePercentDown` | ✅ `0x0BE8` | ⚡ `GEAR_SET` | Verified airborne on a CJ4 and again through the bridge on a King Air 350i, both ways. Watch `0x0BEC`/`0x0BF0`/`0x0BF4`, not the handle: all three legs ran the full travel, 5.0 s up and 4.6 s down. On the ground the sim refuses to retract and both paths look dead. |
 | `carburetorHeatLeverPercentHot` | ◐ `0x08B2` | ⚡ `ANTI_ICE_SET_ENG1` | Binary `0`/`1`, not a percentage — MSFS 2024 models carb heat as the engine anti-ice switch. |
 | `propBetaEnabled` | ✕ | — | `PROP BETA:n` read-only, no beta-set event. |
 
@@ -330,6 +335,15 @@ These are the modern per-aircraft cockpit controls, and they are the natural hom
 `ws://localhost:2992/api/v1`, which is exactly what this FSUIPC bridge serves. An FSUIPC-backed
 bridge is a drop-in substitute: stop one, start the other, and `?msfs2024` connects unchanged.
 
+**The deployed Shirley rejects `frequencyHz` and `standbyFrequencyHz`.** Connecting the bridge
+produced `radiosNavigation: Unrecognized key(s) in object: 'frequencyHz', 'standbyFrequencyHz'`,
+while `transponderCode` in the same group was accepted. Both keys are defined in
+`RadiosNavigationSchema` identically in v2.12 and v2.13 of the published schema, so the running
+Shirley is validating against something older than the repository documents. Because every group
+is `.strict()`, the two keys invalidate the whole group and the transponder code is lost with
+them — so the bridge omits them by default. Worth reconciling: the COM/NAV frequencies read and
+write correctly, and are simply not publishable today.
+
 **Toggle-only fields need a read first.** `isFlightDirectorEngaged`, `totalEnergyAudioSwitchOn`
 and `positionFreezeEnabled` have no absolute setter in MSFS 2024. A bridge can make them idempotent by
 reading current state before toggling, though that is a race in principle — `Writability.AfterRead`
@@ -345,6 +359,12 @@ On a three-detent aircraft the snapping is coarse enough to swallow a command wh
 moved and nothing indicated why. A bridge should convert the requested percentage to a detent
 index and write `0x0BFC`, rather than pass the percentage through and hope.
 
+Verified through the bridge on a King Air 350i, which reports 2 detents plus retracted at 8191
+apart. Requests of 33 % and 66 % both resolve to index 1 and the flaps physically move to 8192,
+confirmed on `0x0BE0`; 100 % reaches index 2 and 0 % returns to retracted. The percentage the
+bridge then publishes is the snapped one — 50 % — not the one that was asked for, which is
+correct and worth expecting on the client side.
+
 **Carb heat is binary** in MSFS 2024, though the schema types it as a percentage.
 
 ## What has not been exercised
@@ -352,7 +372,9 @@ index and write `0x0BFC`, rather than pass the percentage through and hope.
 Everything above marked "not exercised", plus `governorSwitchOn`, which needs a helicopter. The
 position and attitude writes are untested because they teleport the aircraft.
 
-Spoilers, landing gear and prop de-ice are now closed, on a CJ4 and a King Air 350i.
+Landing gear, prop de-ice and flaps-by-detent are closed through the bridge on a King Air 350i,
+the last two against witness offsets. Spoilers still need an aircraft that has them — a King Air
+350i does not, so the only evidence for them remains the CJ4 offset test.
 
 Re-run [`tools/verify_msfs2024.py --write`](../tools/verify_msfs2024.py) on a different airframe
 to close what remains; the script prints the same matrix. Two cautions learned the hard way:
