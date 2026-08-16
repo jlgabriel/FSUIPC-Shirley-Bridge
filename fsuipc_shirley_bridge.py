@@ -540,7 +540,9 @@ SET_FIELDS = {
     },
     "autopilot.isFlightDirectorEngaged": {
         "kind": "toggle", "code": "(>K:TOGGLE_FLIGHT_DIRECTOR)",
-        "state": ("autopilot", "flight_director_on"), "verified": False,
+        "state": ("autopilot", "flight_director_on"), "verified": True,
+        "note": "con el piloto automático puesto el avión lo fuerza encendido y no deja apagarlo; "
+                "no es una falla del puente",
     },
     "autopilot.shouldLevelWings": {
         "kind": "toggle", "code": "(>K:AP_WING_LEVELER)",
