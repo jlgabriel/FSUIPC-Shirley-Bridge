@@ -10,7 +10,7 @@ Prepared for the Airplane Team. Mapped field-by-field against
 | **Status** | Verified against a running sim, August 2026 |
 | **Sim** | MSFS 2024 (Steam). C172SP G1000, King Air 350i and Citation CJ4, parked; CJ4 also airborne for the landing-gear test |
 | **Stack** | FSUIPC7 v7.5.7 · WebSocket Server v1.1.4 · WASM variable service active |
-| **Method** | Every claim exercised by [`tools/verify_msfs2024.py`](../tools/verify_msfs2024.py) |
+| **Method** | Every claim exercised by [`tools/verify_msfs2024.py`](../tools/verify_msfs2024.py), then end to end through the bridge by [`tools/verify_bridge_live.py`](../tools/verify_bridge_live.py) |
 
 > **Terminology.** In the simulation community *MSFS* on its own means MSFS 2020. Everything
 > here was tested exclusively on **MSFS 2024** and is written as such; nothing in this document
@@ -27,6 +27,15 @@ Prepared for the Airplane Team. Mapped field-by-field against
 > failures — turned out to write correctly by offset; they had been tested on an aircraft that
 > could not respond. That prompted a correction to the verification method itself, described
 > below, and surfaced a second silent-failure mode that matters more than the first.
+>
+> **Third revision.** Everything here was re-exercised end to end through the bridge itself
+> ([`tools/verify_bridge_live.py`](../tools/verify_bridge_live.py)), rather than against offsets
+> in isolation: 17 of 18 fields applied, the eighteenth being spoilers on an aircraft that has
+> none. Two claims were corrected. The altitude bug is not settable by the event either — it
+> steps toward the target, and the earlier advice to "use the event" produced a bridge that
+> silently moved the bug 1000 ft and reported success. And a subscription rejected with
+> `NoFlightSim` is never resumed, which matters because starting a bridge before loading the
+> flight is the normal order of operations.
 
 ## Summary
 
@@ -167,16 +176,40 @@ Every field here has a working event. Offset writes are accepted but unverifiabl
 | `isAutopilotEngaged` | ◐ `0x07BC` | ⚡ `AUTOPILOT_ON` / `AUTOPILOT_OFF` (`AP_MASTER` toggles) |
 | `isHeadingSelectEnabled` | ◐ `0x07C8` | ⚡ `AP_PANEL_HEADING_HOLD` |
 | `magneticHeadingBugDeg` | ◐ `0x07CC` | ⚡ `HEADING_BUG_SET` (degrees) |
-| `altitudeBugFt` | ✗ `0x07D4` | ⚡ `AP_ALT_VAR_SET_ENGLISH` (feet) |
+| `altitudeBugFt` | ✗ `0x07D4` | ◐ `AP_ALT_VAR_SET_ENGLISH` — steps, does not set. See below. |
 | `altitudeMode` = `altitudeHold` | ◐ `0x07D0` | ⚡ `AP_PANEL_ALTITUDE_HOLD` |
 | `altitudeMode` = `verticalSpeed` | ◐ `0x07EC` | ⚡ `AP_PANEL_VS_HOLD` |
 | `targetVerticalSpeedUpFpm` | ◐ `0x07F2` | ⚡ `AP_VS_VAR_SET_ENGLISH` (fpm) |
 | `isFlightDirectorEngaged` | — | ⚡ `TOGGLE_FLIGHT_DIRECTOR` — toggle only |
 | `shouldLevelWings` | — | ⚡ `AP_WING_LEVELER` |
 
-**`0x07D4` deserves a warning.** It does not accept a value: each write *increments* the altitude
-bug by exactly 1000 ft, whatever you write. Three consecutive writes of the same value produced
-+1000, +1000, +1000. Use the event.
+**The altitude bug does not accept a value at all — by either path.**
+
+The first version of this section blamed offset `0x07D4`, reported that each write added exactly
+1000 ft whatever you wrote, and told you to use the event instead. Driving the event directly
+proved that wrong on both counts.
+
+`AP_ALT_VAR_SET_ENGLISH` moves the preselect **1000 ft toward the requested value**. It is a step,
+not a set, and the step has a direction:
+
+```
+at 5000, sent 12000  ->  6000     (+1000)
+at 6000, sent  3000  ->  5000     (-1000)
+at 5000, sent   100  ->  4000     (-1000)
+at 4000, sent     0  ->  3000     (-1000)
+```
+
+So the earlier "+1000 every time" was an artefact of always writing a value above the current one.
+`AP_ALT_VAR_INC` / `AP_ALT_VAR_DEC` move 100 ft per call.
+
+The behaviour is convergent, which is what makes it usable: read the current value, step toward
+the target in 1000 ft jumps, then trim with INC/DEC. That is what the bridge does, and it lands on
+an arbitrary altitude in a bounded number of calls. A client that fires one event and assumes the
+bug is set will be wrong on this airframe.
+
+Measured on a C172 G1000. An aircraft whose autopilot honours the event outright would satisfy the
+same loop on the first call, so the loop is not specific to this airframe — but a fixed
+single-call implementation is.
 
 `altitudeMode`'s other values — `pitch`, `terrain`, `VNAV`, `TOGA`, `flightPathAngle`,
 `VNAVSpeed` — have no generic MSFS 2024 event. `levelChange` maps to `FLIGHT_LEVEL_CHANGE` and
@@ -267,6 +300,18 @@ the identical call succeeds immediately on a fresh connection — so it is not t
 aircraft or load. A bridge that holds one long-lived connection will simply go quiet the first
 time this happens. **Automatic reconnection, with re-declaration of the offset groups and
 re-subscription, is a requirement, not a refinement.**
+
+Confirmed again while verifying the bridge: two drops inside three minutes of ordinary use, one of
+them mid-command. Reconnection took about a second each time. The commands issued during the gap
+have to be reported as failed rather than quietly dropped — they never reached the simulator, and
+the caller is the only one who can decide whether to reissue them.
+
+**A rejected subscription is never resumed.** Start a client before loading a flight and
+`offsets.read` is answered once with `NoFlightSim` — after which the server says nothing at all,
+while the socket stays open and healthy. Neither the read loop nor any reconnection logic will
+notice, because nothing is broken. Since starting the bridge before loading the flight is the
+normal order of operations, a client needs a watchdog that re-declares and re-subscribes while no
+data is arriving; waiting for a connection error is not enough.
 
 ## Input Events (`B:` vars, MSFS 2024 only)
 

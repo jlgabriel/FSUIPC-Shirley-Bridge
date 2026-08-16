@@ -35,6 +35,7 @@ class FakeWS:
         self.sent = []
         self.calc_ok = calc_ok
         self.closed = False
+        self.aircraft = None      # optional coroutine: how the aeroplane reacts
         self._client = None
 
     def attach(self, client):
@@ -46,6 +47,8 @@ class FakeWS:
         msg = json.loads(raw)
         self.sent.append(msg)
         if msg.get("command") == "vars.calc":
+            if self.aircraft is not None and self.calc_ok:
+                await self.aircraft(msg["code"])
             reply = {"command": "vars.calc", "name": msg.get("name"),
                      "success": self.calc_ok, "errorCode": None, "errorMessage": None}
             # Deliver after the caller has registered its waiter.
@@ -237,8 +240,61 @@ class TestWritePath:
         _, client, ws = make_client()
         await client.apply_set_simdata({"autopilot": {"altitudeBugFt": 5000}})
 
-        assert ws.codes() == ["5000 (>K:2:AP_ALT_VAR_SET_ENGLISH)"]
+        assert ws.codes() == ["5000 (>K:AP_ALT_VAR_SET_ENGLISH)"]
         assert ws.writes() == []
+
+    async def test_altitude_bug_converges_in_steps(self):
+        """Verified on a C172 G1000 in MSFS 2024: AP_ALT_VAR_SET_ENGLISH does
+        not set the value, it moves the preselect 1000 ft *toward* it. So the
+        bridge has to converge, and fine-tune the last part with INC/DEC."""
+        sim, client, ws = make_client()
+        await feed(client, {"AP_ALT_BUG": raw_alt_bug_ft(2000)})
+        panel = {"ft": 2000.0}
+
+        async def aeroplane(code):
+            if "AP_ALT_VAR_SET_ENGLISH" in code:
+                target = float(code.split()[0])
+                panel["ft"] += 1000.0 if target > panel["ft"] else -1000.0
+            elif "AP_ALT_VAR_INC" in code:
+                panel["ft"] += 100.0
+            elif "AP_ALT_VAR_DEC" in code:
+                panel["ft"] -= 100.0
+            await feed(client, {"AP_ALT_BUG": raw_alt_bug_ft(panel["ft"])})
+
+        ws.aircraft = aeroplane
+        result = await client.apply_set_field("autopilot.altitudeBugFt", 5500)
+
+        assert result["ok"] is True
+        assert abs(panel["ft"] - 5500.0) <= 60
+        assert len([c for c in ws.codes() if "SET_ENGLISH" in c]) == 3   # 2000 -> 5000
+        assert len([c for c in ws.codes() if "VAR_INC" in c]) == 5       # 5000 -> 5500
+
+    async def test_altitude_bug_absolute_aircraft_needs_one_call(self):
+        """On an aircraft where the event does set the value outright, the
+        convergence loop must stop after the first call, not keep nudging."""
+        sim, client, ws = make_client()
+        await feed(client, {"AP_ALT_BUG": raw_alt_bug_ft(2000)})
+
+        async def aeroplane(code):
+            if "SET_ENGLISH" in code:
+                await feed(client, {"AP_ALT_BUG": raw_alt_bug_ft(float(code.split()[0]))})
+
+        ws.aircraft = aeroplane
+        result = await client.apply_set_field("autopilot.altitudeBugFt", 5000)
+
+        assert result["ok"] is True
+        assert ws.codes() == ["5000 (>K:AP_ALT_VAR_SET_ENGLISH)"]
+
+    async def test_altitude_bug_gives_up_when_nothing_moves(self):
+        """An aircraft that ignores the event must not spin the loop 70 times."""
+        sim, client, ws = make_client()
+        await feed(client, {"AP_ALT_BUG": raw_alt_bug_ft(2000)})
+
+        ws.aircraft = None       # the panel never moves
+        result = await client.apply_set_field("autopilot.altitudeBugFt", 5000)
+
+        assert result["ok"] is False
+        assert len(ws.codes()) == 1
 
     async def test_com_frequency_encodes_bcd(self):
         _, client, ws = make_client()

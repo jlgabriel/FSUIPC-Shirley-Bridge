@@ -528,8 +528,9 @@ SET_FIELDS = {
         "kind": "event", "code": "{v} (>K:2:HEADING_BUG_SET)", "encode": _enc_deg, "verified": True,
     },
     "autopilot.altitudeBugFt": {
-        "kind": "event", "code": "{v} (>K:2:AP_ALT_VAR_SET_ENGLISH)", "encode": _enc_int, "verified": True,
-        "note": "por evento y nunca por offset: 0x07D4 ignora el valor y suma 1000 ft en cada escritura",
+        "kind": "custom", "handler": "altitude_bug", "verified": True,
+        "note": "el evento no fija el valor, mueve el preselector 1000 ft hacia el objetivo; "
+                "hay que converger",
     },
     "autopilot.targetVerticalSpeedUpFpm": {
         "kind": "event", "code": "{v} (>K:2:AP_VS_VAR_SET_ENGLISH)", "encode": _enc_int, "verified": True,
@@ -665,6 +666,13 @@ def _unsupported_reason(path: str) -> str:
     if path.startswith(("position.", "attitude.")):
         return "teletransportar la aeronave requiere slew o freeze; no implementado"
     return "campo no soportado por el puente"
+
+
+def fmt_ft(value: Any) -> str:
+    try:
+        return f"{float(value):.0f} ft"
+    except (TypeError, ValueError):
+        return repr(value)
 
 
 def _calc_tag(path: str) -> str:
@@ -2101,6 +2109,19 @@ class FSUIPCWSClient:
     CALC_TIMEOUT_S = 3.0
     WRITE_ERROR_WINDOW_S = 0.8
 
+    # Una suscripción puede morir sin que se caiga la conexión. El caso normal
+    # es arrancar el puente antes de cargar el vuelo: offsets.read se rechaza
+    # con NoFlightSim y el servidor no la reanuda solo cuando el simulador
+    # aparece. El socket queda abierto y sano, y sin vigilancia el puente se
+    # queda callado para siempre sobre una conexión que funciona.
+    DATA_STALL_S = 8.0
+    WATCHDOG_PERIOD_S = 4.0
+
+    # El preselector de altitud se mueve de a 1000 ft por evento, así que ir de
+    # 0 a 50 000 ft son 50 pasos más el ajuste fino de a 100.
+    ALT_BUG_MAX_STEPS = 70
+    ALT_BUG_TOLERANCE_FT = 60.0
+
     def __init__(self, sim_data: SimData, url: str = FSUIPC_WS_URL):
         self.sim_data = sim_data
         self.url = url
@@ -2146,14 +2167,18 @@ class FSUIPCWSClient:
                     logger.info(f"Connected to FSUIPC (subprotocol={ws.subprotocol})")
                     await self._declare_and_subscribe(ws)
 
-                    async for msg in ws:
-                        if isinstance(msg, bytes):
-                            try:
-                                msg = msg.decode('utf-8', 'ignore')
-                            except Exception:
-                                continue
-                        if isinstance(msg, str):
-                            await self._handle_incoming(msg)
+                    watchdog = asyncio.create_task(self._watch_data_flow(ws))
+                    try:
+                        async for msg in ws:
+                            if isinstance(msg, bytes):
+                                try:
+                                    msg = msg.decode('utf-8', 'ignore')
+                                except Exception:
+                                    continue
+                            if isinstance(msg, str):
+                                await self._handle_incoming(msg)
+                    finally:
+                        watchdog.cancel()
 
                 logger.warning("FSUIPC cerró la conexión; reconectando")
             except asyncio.CancelledError:
@@ -2168,9 +2193,10 @@ class FSUIPCWSClient:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, self.RECONNECT_BACKOFF_MAX_S)
 
-    async def _declare_and_subscribe(self, ws):
+    async def _declare_and_subscribe(self, ws, quiet: bool = False):
         """Declara el grupo y arranca la suscripción. Se repite en cada
-        reconexión: el servidor no recuerda nada de la sesión anterior."""
+        reconexión — el servidor no recuerda nada de la sesión anterior — y
+        también cuando el vigía detecta que dejaron de llegar datos."""
         declare_msg = {
             "command": "offsets.declare",
             "name": FSUIPC_GROUP,
@@ -2179,16 +2205,54 @@ class FSUIPCWSClient:
                 for key, cfg in READ_SIGNALS.items()
             ],
         }
-        await ws.send(json.dumps(declare_msg))
-        logger.info(f"Declared {len(READ_SIGNALS)} FSUIPC offsets as '{FSUIPC_GROUP}'")
-
         read_msg = {
             "command": "offsets.read",
             "name": FSUIPC_GROUP,
             "interval": int(SEND_INTERVAL * MILLISECONDS_PER_SECOND),
         }
-        await ws.send(json.dumps(read_msg))
-        logger.info(f"Started reading FSUIPC offsets every {read_msg['interval']} ms")
+        async with self._write_lock:
+            await ws.send(json.dumps(declare_msg))
+            await ws.send(json.dumps(read_msg))
+
+        log = logger.debug if quiet else logger.info
+        log(f"Declared {len(READ_SIGNALS)} FSUIPC offsets as '{FSUIPC_GROUP}', "
+            f"reading every {read_msg['interval']} ms")
+
+    async def _watch_data_flow(self, ws):
+        """Rehace la suscripción mientras no lleguen datos.
+
+        Una suscripción rechazada no se reanuda sola. El caso corriente es
+        arrancar el puente antes de cargar el vuelo: FSUIPC contesta un único
+        NoFlightSim y después se queda callado, con el socket abierto y en
+        perfecto estado, así que ni el bucle de lectura ni la reconexión se
+        enteran de nada.
+        """
+        started = time.time()
+        complained = False
+        while True:
+            await asyncio.sleep(self.WATCHDOG_PERIOD_S)
+            if self.ws is not ws:
+                return
+
+            last = self.last_data_received_time or started
+            if time.time() - last < self.DATA_STALL_S:
+                if complained:
+                    logger.info("FSUIPC volvió a entregar datos")
+                    complained = False
+                continue
+
+            if not complained:
+                logger.warning(
+                    f"Sin datos de FSUIPC hace más de {self.DATA_STALL_S:.0f}s; "
+                    f"rehaciendo la suscripción (¿el vuelo todavía no cargó?)"
+                )
+                complained = True
+
+            try:
+                await self._declare_and_subscribe(ws, quiet=True)
+            except Exception as e:
+                logger.error(f"No se pudo rehacer la suscripción: {e!r}")
+                return
 
     # ---------- correlación de respuestas ----------
 
@@ -2450,7 +2514,17 @@ class FSUIPCWSClient:
             return {"field": path, "ok": False, "error": repr(e)}
 
         logger.info(f"SetSimData {path} = {value!r} -> {'ok' if ok else 'falló'}")
-        return {"field": path, "ok": bool(ok)}
+        if ok:
+            return {"field": path, "ok": True}
+
+        # Un fallo tiene que decir por qué. Que el comando no haya llegado al
+        # simulador y que el simulador lo haya rechazado son cosas distintas, y
+        # la primera es transitoria: este servidor corta la conexión cada tanto
+        # sin aviso, y el comando se puede volver a mandar.
+        reason = ("el comando no llegó al simulador: la conexión con FSUIPC se cortó, "
+                  "se puede reintentar" if self.ws is None
+                  else "el simulador no aplicó el comando")
+        return {"field": path, "ok": False, "error": reason}
 
     async def _dispatch_set(self, spec: dict, path: str, value: Any) -> bool:
         kind = spec["kind"]
@@ -2458,6 +2532,7 @@ class FSUIPCWSClient:
         if kind == "custom":
             handler = {
                 "flaps": self._set_flaps,
+                "altitude_bug": self._set_altitude_bug,
                 "altitude_mode": self._set_altitude_mode,
                 "zulu_time": self._set_zulu_time,
             }[spec["handler"]]
@@ -2526,6 +2601,64 @@ class FSUIPCWSClient:
             return await self.write_offset("FLAPS_INDEX", index)
 
         return await self.calc(f"{_enc_pct_16383(pct)} (>K:FLAPS_SET)", "setFlaps")
+
+    async def _set_altitude_bug(self, value) -> bool:
+        """Lleva el preselector de altitud al valor pedido, convergiendo.
+
+        Verificado sobre un C172 G1000 en MSFS 2024: AP_ALT_VAR_SET_ENGLISH no
+        fija el valor que se le manda, mueve el preselector 1000 ft *hacia* él.
+        Mandarle 12000 estando en 5000 deja 6000; mandarle 3000 estando en 6000
+        deja 5000. AP_ALT_VAR_INC/DEC mueven de a 100 ft.
+
+        Por eso esto es un lazo y no una sola llamada. En un avión donde el
+        evento sí fije el valor de una, la primera vuelta ya cae dentro de
+        tolerancia y el lazo termina ahí. Si el avión ignora el evento, el
+        guardia de progreso corta a la segunda vuelta en vez de insistir.
+        """
+        target = float(value)
+        last = None
+
+        for _ in range(self.ALT_BUG_MAX_STEPS):
+            current = await self.sim_data.get_sink("autopilot", "alt_bug_ft")
+            if current is None:
+                # Sin lectura no se puede converger; queda un intento suelto.
+                return await self.calc(f"{_enc_int(target)} (>K:AP_ALT_VAR_SET_ENGLISH)", "setAltBug")
+
+            delta = target - float(current)
+            if abs(delta) <= self.ALT_BUG_TOLERANCE_FT:
+                return True
+
+            if last is not None and abs(float(current) - last) < 1.0:
+                logger.warning(
+                    f"altitudeBugFt: el preselector no se movió desde {fmt_ft(current)}; "
+                    f"esta aeronave no acepta el evento"
+                )
+                return False
+            last = float(current)
+
+            if abs(delta) >= 1000.0:
+                code = f"{_enc_int(target)} (>K:AP_ALT_VAR_SET_ENGLISH)"
+            else:
+                code = "(>K:AP_ALT_VAR_INC)" if delta > 0 else "(>K:AP_ALT_VAR_DEC)"
+
+            if not await self.calc(code, "setAltBug"):
+                return False
+            await self._wait_for_sink_change("autopilot", "alt_bug_ft", current)
+
+        logger.warning(f"altitudeBugFt: no se llegó a {target} ft en "
+                       f"{self.ALT_BUG_MAX_STEPS} pasos")
+        return False
+
+    async def _wait_for_sink_change(self, group: str, field: str, previous: Any,
+                                    timeout: float = 1.5) -> bool:
+        """Espera a que una lectura se actualice, en vez de dormir a ciegas."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            await asyncio.sleep(SEND_INTERVAL / 2)
+            if await self.sim_data.get_sink(group, field) != previous:
+                return True
+        return False
 
     async def _set_altitude_mode(self, value) -> bool:
         mode = str(value)
