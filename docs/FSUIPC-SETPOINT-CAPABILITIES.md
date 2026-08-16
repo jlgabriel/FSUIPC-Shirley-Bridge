@@ -167,7 +167,7 @@ verified · ✗ echo: accepted but proven not applied · ✕ rejected outright �
 |---|---|---|---|
 | `flapsHandlePercentDown` | ✅ `0x0BDC` | ⚡ `FLAPS_SET` | `0…16383`, snapped to the aircraft's detents. On coarse-detent aircraft prefer the index — see below. |
 | — *(detent index)* | ✅ `0x0BFC` | — | Addresses detents directly, one byte, `0`-based. The reliable path on aircraft with few positions. |
-| `speedBrakesHandlePercentDeployed` | ✅ `0x0BD0` | ⚡ `SPOILERS_SET` | Verified on a CJ4, both ways. Full deflection normalises to **16384**, not 16383. |
+| `speedBrakesHandlePercentDeployed` | ✅ `0x0BD0` | ⚡ `SPOILERS_SET` | Verified on a CJ4, both ways, and again through the bridge watching the surface at `0x0BD4`: 0 → 16384 out, 16384 → 0 in. Full deflection normalises to **16384**, not 16383. |
 | `landingGearHandlePercentDown` | ✅ `0x0BE8` | ⚡ `GEAR_SET` | Verified airborne on a CJ4 and again through the bridge on a King Air 350i, both ways. Watch `0x0BEC`/`0x0BF0`/`0x0BF4`, not the handle: all three legs ran the full travel, 5.0 s up and 4.6 s down. On the ground the sim refuses to retract and both paths look dead. |
 | `carburetorHeatLeverPercentHot` | ◐ `0x08B2` | ⚡ `ANTI_ICE_SET_ENG1` | Binary `0`/`1`, not a percentage — MSFS 2024 models carb heat as the engine anti-ice switch. |
 | `propBetaEnabled` | ✕ | — | `PROP BETA:n` read-only, no beta-set event. |
@@ -212,9 +212,13 @@ the target in 1000 ft jumps, then trim with INC/DEC. That is what the bridge doe
 an arbitrary altitude in a bounded number of calls. A client that fires one event and assumes the
 bug is set will be wrong on this airframe.
 
-Measured on a C172 G1000. An aircraft whose autopilot honours the event outright would satisfy the
-same loop on the first call, so the loop is not specific to this airframe — but a fixed
-single-call implementation is.
+Measured on a C172 G1000. On a Citation CJ4 a single `12000 (>K:AP_ALT_VAR_SET_ENGLISH)` took the
+preselect straight from 0 to 12000 ft — so the stepping is the aircraft, not the event: the G1000
+interprets the event as a knob movement while the CJ4's autopilot honours it outright.
+
+A client cannot tell which it is facing from the outside, and both are common. Converging covers
+both — on the CJ4 the first call lands and the loop exits immediately — while any fixed
+single-call implementation is silently wrong on half the fleet.
 
 `altitudeMode`'s other values — `pitch`, `terrain`, `VNAV`, `TOGA`, `flightPathAngle`,
 `VNAVSpeed` — have no generic MSFS 2024 event. `levelChange` maps to `FLIGHT_LEVEL_CHANGE` and
@@ -291,6 +295,13 @@ Three behaviours of the WebSocket server that cost time to discover:
 last response, the server sends nothing at all — not an empty payload, no response. A one-shot
 read after a quiet moment hangs forever. Subscribe once with `interval` and merge the partial
 payloads into a running state.
+
+This has a sharper edge than it first appears: **a group whose offsets are all static never
+responds at all, not even once.** There is no initial snapshot on subscribe. A group declared as
+just the spoiler handle and the spoiler surface, both sitting at zero, stays silent forever and is
+indistinguishable from a broken connection — it cost two confusing runs here before the cause was
+clear. Include one offset that always moves, such as latitude, and the whole group is reported on
+every interval.
 
 **A malformed `offsets.write` is discarded silently.** Sending the undocumented
 `{"values":[{"address":…}]}` shape produces no error response whatsoever.
@@ -373,8 +384,10 @@ Everything above marked "not exercised", plus `governorSwitchOn`, which needs a 
 position and attitude writes are untested because they teleport the aircraft.
 
 Landing gear, prop de-ice and flaps-by-detent are closed through the bridge on a King Air 350i,
-the last two against witness offsets. Spoilers still need an aircraft that has them — a King Air
-350i does not, so the only evidence for them remains the CJ4 offset test.
+the last two against witness offsets; spoilers on a Citation CJ4, likewise against the surface
+rather than the handle. Between the C172SP G1000, the King Air 350i and the CJ4, every field the
+bridge implements has now been exercised end to end except Zulu time, day of year, pause and
+`governorSwitchOn`, which needs a helicopter.
 
 Re-run [`tools/verify_msfs2024.py --write`](../tools/verify_msfs2024.py) on a different airframe
 to close what remains; the script prints the same matrix. Two cautions learned the hard way:
